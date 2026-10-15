@@ -1,0 +1,331 @@
+2024 GTM Benchmarks - OnlyCFO's Newsletter
+
+11/10/26, 2:35 PM
+
+2024 GTM Benchmarks
+
+The OnlyCFO newsletter has been sponsored by some of the very best f solutions. I love being sponsored by companies that are very relevant t audience and can help folks run their companies better.
+
+Today is no different with \ieow. They help solve real problems faced | company.
+
+Today's Sponsor:
+
+&3 Meow: Business banking, with interest. (Meow is a financial technc company, not a bank)
+
+When thinking about banking for your business, did you consider w your checking account pays interest?
+
+It might be easy to forget. Meow finds banks willing to pay interest on checking accounts, not just on idle cash. Some other benefits:
+
+e Zero wire fees on checking accounts from Meow’s partner banks. e Earn up to 5.02% Annual Percentage Yield subject to rate sheets fro FirstBank, a Tennessee corporation; Member FDIC;
+
+e Earn unlimited up to 2% cash back with the Meow Card. (The Meo\ issued by Community Federal Savings Bank, Member FDIC, pursua license from VISA U.S.A. Inc.)
+
+https://www.onlycfo.io/p/2024-gtm-benchmarks
+
+Page 1 of 13
+
+2024 GTM Benchmarks - OnlyCFO's Newsletter
+
+11/10/26, 2:35 PM
+
+Apply for an account
+
+Software Benchmarks ARR Growth Challenges Continue
+
+Revenue growth continues to decelerate across company sizes in 2024. continue to tighten in a tough environment for software companies. Bu companies are at least making room for AI investments...
+
+Below is benchmark data from ICONIQ’s most recent report:
+
+Top Quartile YoY ARR Growth?
+
+<$25M ARR $25M-$100M ARR. $100M-$200M ARR $20 253% 168% 71% 54% 37% 5% 27% i 2023 2024 2023 2024 2023 2024 2023
+
+Another interesting way to look at the above data is the endurance of t.
+
+https://www.onlycfo.io/p/2024-gtm-benchmarks
+
+Page 2 of 13
+
+2024 GTM Benchmarks - OnlyCFO's Newsletter
+
+11/10/26, 2:35 PM
+
+growth by ARR buckets from one year to the next (e.g. 2024 growth / 2( growth). It’s clear that the most impacted by slowing revenue growth a and the least impact are the large at-scale companies.
+
+<$25M $25 - 100M $100 - 200M 2023 ARR growth 253% 71% 37% 2024 ARR growth 168% 54% 27% Endurance 66% 76% 73%
+
+For companies <$25M in ARR, 2024 growth is only 66% of what it was i Growth for this bucket dropped 85 percentage points over one year! HUGE...
+
+On the other hand, more mature at-scale companies only saw ARR gro slightly — 35% growth in 2023 vs 30% in 2024 (86% endurance).
+
+|
+
+What does the differences in declining revenue growth tell us?
+
+Two possible explanations that I see continuing to play out:
+
+1. Fear of buying from startups. “Nobody got fired by buying from [ne well-regarded company]”. Buying from startups for any critical anc visible tool feels A LOT riskier today because of the startup compa this environment and buyers are a lot less willing to bet their caree unproven tool today.
+
+2. Vendor consolidation push. We are all trying to be more efficient si us are consolidating tools and focusing on larger vendors that can several needs versus lots of different point solutions.
+
+Early stage companies need to continue to further de-risk the purchase because it’s been getting harder to compete against bigger companies ¢
+
+https://www.onlycfo.io/p/2024-gtm-benchmarks
+
+Page 3 of 13
+
+2024 GTM Benchmarks - OnlyCFO's Newsletter
+
+11/10/26, 2:35 PM
+
+two things continue to play out.
+
+Public Company ARR Growth:
+
+The below public company benchmark data tells a similar story for me companies. On the bright side it looks like ARR growth actually started in Q2.
+
+Median YoY ARR Growth
+
+Public SaaS 50% 32% 34% 34% 33% 30% 26% 30% 24% 21% 19% 18% 18% 20% 10% 0% 2020-Q4 2021-Q1 2021-Q2 2021-Q3 2021-Q4 2022-Q1 2022-Q2 2022-Q3 2022-04 2023-Q1 2023-Q2 2023-Q3 2023-Q4 ;
+
+BenchSights
+
+NRR is Falling
+
+NRR (net revenue retention, aka NDR) has been falling since 2021 for m companies. This NRR story lines up with the overall ARR growth decli: discussed above. It’s hard to grow fast when the easy expansion oppor are declining and churn is increasing.
+
+https://www.onlycfo.io/p/2024-gtm-benchmarks
+
+Page 4 of 13
+
+2024 GTM Benchmarks - OnlyCFO's Newsletter
+
+11/10/26, 2:35 PM
+
+Top Quartile Net Dollar Retention*
+
+By ARR scale
+
+<$25MARR $25M-$100M ARR $100M-$200M ARR $20 119% 112% 110% 110% 107% 100% 100% 2023 2024 2023 2024 2023 2024 2023 95% 95% 94% 92% 91% 91% 93%
+
+Public company benchmarks: public companies follow a similar patte1 bigger they are, the harder they fall — Snowflake’s NRR dropped 47 per points since 2021! That is 47% of easier ARR growth that just vanished.
+
+Median NRR Public SaaS 130% 122% 120% 119% 110% 110% 100% 2021 2022 2023
+
+Median NRR
+
+Public SaaS
+
+130%
+
+BenchSights
+
+https://www.onlycfo.io/p/2024-gtm-benchmarks
+
+Page 5 of 13
+
+2024 GTM Benchmarks - OnlyCFO's Newsletter
+
+11/10/26, 2:35 PM
+
+NRR Trends Since 2021
+
+(Ordered 2023 NRR)
+
+NRR Net Company 2021 2022 2023 Change Snowflake 178% 158% 131% -A7% GitLab 152% 130% 130% -22% Confluent 130% 130% 125% -5% Datadog 130% 130% 120% -10% MongoDB NA 120% 120% NA Olo 120% 106% 120% 0% JFrog 130% 128% 119% “11% UiPath 145% 145% 119% -26% CrowdStrike 124% 120% 119% -5% Sprinkir 119% 123% 118% -1% nCino 133% 125% 117% -16% Braze 128% 124% 117% “11% Zscaler 125% 125% 117% 8% Fastly NA 120% 116% NA Smartsheet 134% 125% 116% -18% HashiCorp 131% 131% 115% -16% Okla 124% 122% 115% -9% Couchbase 115% 115% 115% 0% Cloudflare 125% 122% 115% -10% SentinelOne 129% 130% 115% -14% Procore 109% 117% 114% 5% Tenable 117% 117% 114% 6% Bill 124% 116% 111% -13% Five9 122% 115% 110% -12% monday 120% 120% 110% -10% Elastic 130% 120% 109% -21% Q2 119% 110% 108% “11% Jamf 120% 117% 108% =12% Clearwater Analytics NA 104% 108% NA
+
+r,
+
+BenchSights
+
+LTV/CAC Thoughts
+
+Iam generally not a fan of private company LTV/CAC benchmarks for : reasons:
+
+e
+
+For companies with <$25M in ARR the calculation is usually misle
+
+© Nota fully built out GTM motion so CAC isn't realistic for when actually at scale. Startups bragging about their LTV/CAC of 15+ silly...
+
+https://www.onlycfo.io/p/2024-gtm-benchmarks
+
+Page 6 of 13
+
+2024 GTM Benchmarks - OnlyCFO's Newsletter
+
+11/10/26, 2:35 PM
+
+o The LTV calculation is wrong because there isn't enough churn can get this to be somewhat accurate but that is a post for anot
+
+e Private company benchmark data will have a lot of different meth« (accounting treatment, customer life, etc) which can significantly « LTV and CAC numbers
+
+e There are way too many variables in LTV/CAC to make it a useful c metric.
+
+Understanding the LTV/CAC ratio 1s important because it is ultimately drives cloud valuations, but don't over analyze it. In many ways the LT" ratio is like a discounted cash flow (DCF) model - in theory it is perfect, practice it is always very wrong.
+
+Contract Term Length is Increasing
+
+https://www.onlycfo.io/p/2024-gtm-benchmarks
+
+Page 7 of 13
+
+2024 GTM Benchmarks - OnlyCFO's Newsletter
+
+11/10/26, 2:35 PM
+
+I actually found the below a bit surprising - contract terms are increasi companies I speak with are trying to limit multi-year contracts on the side (most of us like it on the customer side though because it limits ck
+
+Having said that, with more companies buying more from larger comp mentioned above, this trend actually makes sense. Companies are muc likely to sign multi-year deals with large companies.
+
+My contract term length policy: any new vendor must be one year ma: very rare exception) and then we can consider multi-year if certain cri met:
+
+e Discount for multi-year is worth it
+
+e Software is critical
+
+e Internal champion signs in blood that they need it and won't switc e Confidence in vendor and roadmap/innovation
+
+https://www.onlycfo.io/p/2024-gtm-benchmarks
+
+Page 8 of 13
+
+2024 GTM Benchmarks - OnlyCFO's Newsletter
+
+11/10/26, 2:35 PM
+
+CAC Ratio
+
+The CAC (customer acquisition cost) ratio has skyrocketed since 2021. chart from BenchSights shows the CAC ratio for public cloud companie
+
+|
+
+CAC Ratio = S&M spend / Net New ARR
+
+BenchSights
+
+In Q1 2021 it cost public cloud companies $1.61 to acquire $1.00 in ARR, it costs them $2.26 for $1.00 in ARR. That is a 40% increase!
+
+Sales Attainment
+
+A big reason for this massive CAC increase is the drop in sales rep atta’ When sales reps are beating quota everyone is happy because not only reps making piles of money, but each incremental dollar in sales is mu efficient.
+
+Large company quota attainment has continued to decline while smal] company sales quota attainment has started to recover.
+
+https://www.onlycfo.io/p/2024-gtm-benchmarks
+
+Page 9 of 13
+
+|
+
+2024 GTM Benchmarks - OnlyCFO's Newsletter
+
+11/10/26, 2:35 PM
+
+RepVue
+
+Benchmarking Caveats
+
+When comparing benchmarks, it’s important to consider the populatio firmographics of the benchmark data before trying to compare. Bench is usually separated by:
+
+1. Public company
+
+2. Private company
+
+Public Company:
+
+When comparing public companies data then of course you can just us publicly available data sets of the most relevant companies. It is impor consider revenue scale and other company specific factors when maki comparisons.
+
+Private Company:
+
+Private company benchmark data is not as straight forward though be: the following:
+
+https://www.onlycfo.io/p/2024-gtm-benchmarks
+
+Page 10 of 13
+
+2024 GTM Benchmarks - OnlyCFO's Newsletter
+
+11/10/26, 2:35 PM
+
+e They don't have individual company data so you don't really know are comparing against. For example, some benchmark reports just quartile metrics. Companies are often not top quartile in every met you compare to all the top quartile benchmarks your expectations unrealistic
+
+e High diversity in accounting and metric definitions amongst privé companies. The earlier stage companies may define and do things different so the data is less reliable.
+
+e Very different firmographics of companies in data set. Understand performed the benchmark report and the firmographics of those cc is critical.
+
+When benchmarking with private company data you need to make sul really relevant to your company before using it as a comp.
+
+For example, I referenced a recent GTM report from ICONIQ above. ICOI produces some of my favorite private company software reports. But it’ important to remember that ICONIQ’s investment portfolio is comprise high growth VC-backed companies (they get some of the very best com the world). It is probably not very relevant to a bootstrapped company profitable company that has a goal to be acquired.
+
+Benchmarks Lag:
+
+Like all benchmarking reports, the data is lagging because it is reportil historicals. In a quickly changing environment, companies should und the benchmarks but also consider how things are changing and adapt you want to be (not where other companies have been).
+
+In today’s faced pace and quickly changing environment with generat companies need to skate to where the puck is going, not where it was.. they will be left behind. Benchmarks are informative though on trends
+
+https://www.onlycfo.io/p/2024-gtm-benchmarks
+
+Page 11 of 13
+
+2024 GTM Benchmarks - OnlyCFO's Newsletter
+
+11/10/26, 2:35 PM
+
+realize things can change quickly and they may not indicate where yo be.
+
+Concluding Thoughts
+
+My constant reminder on benchmarks: Make sure you understand wh comparing. I see way too many people blindly compare to some irrelev benchmark.
+
+For private companies, ask your investors for benchmarks most releva company. They have lots of data and can share anonymized portfolio c data and/or provide insight on where they think you should be.
+
+Understand the benchmarks, but skate to where the puck is going and it has been.
+
+Footnotes:
+
+e Create an account with \ieow and see what it can do
+
+e Need a fractional CFO and/or bookkeeper that specializes in softw tech? Reply to this email (or email onlycfo@onlycfo.io) and I will h e Check out OnlyExperts for your offshore accounting needs
+
+Lvervowent | siete |
+
+;
+
+< Previous
+
+https://www.onlycfo.io/p/2024-gtm-benchmarks
+
+Page 12 of 13
+
+2024 GTM Benchmarks - OnlyCFO's Newsletter
+
+11/10/26, 2:35 PM
+
+Discussion about this post
+
+Comments
+
+Mr.incognito
+
+=
+
+@ Liked by OnlyCFO
+
+From the vantage point of a~25M ARR bootstrapped SaaS company; we've also se¢ like you've outlined here, largely from a significant drop in expansion compared to p job collecting all this data and packaging it into a quick, easy to understand post so know we're not alone.
+
+iv; D
+
+»
+
+Brian Weisberg ®
+
+@ Liked by OnlyCFO
+
+Solid pulse check on KPI trends.
+
+Vv) OD
+
+https://www.onlycfo.io/p/2024-gtm-benchmarks
+
+Page 13 of 13

@@ -1,0 +1,347 @@
+Multimodal RAG: PDF upload to answer, end to end
+================================================
+
+This file describes what the current repository code does. It covers starting the services, uploading a PDF, extracting and storing its contents, searching, and generating an answer. The spelling of this filename follows the requested name: explaination.txt.
+
+1. What runs when the server starts
+-----------------------------------
+
+For the full local setup, the README uses:
+
+    docker compose up --build
+
+Docker Compose builds the Python application image and starts these services:
+
+* PostgreSQL 16: stores document rows, ingestion job rows, and extracted evidence text/metadata.
+* Redis 7: message broker used by Celery to queue ingestion jobs.
+* Qdrant 1.13.6: vector database used for semantic search.
+* RustFS: S3-compatible object storage. The application accesses it through the MinIO Python client. It stores uploaded source files and extracted image/page-render assets.
+* API: FastAPI server, exposed at http://localhost:8000. The browser UI is at / and API docs at /docs.
+* Worker: Celery process that runs PDF ingestion separately from the API request.
+
+Compose waits for PostgreSQL and Redis health checks before starting the API and worker. Qdrant and RustFS are configured as dependencies with service-started checks. The API container command runs `alembic upgrade head` first to create/update the PostgreSQL schema, then runs Uvicorn for `app.main:app`. During FastAPI startup, its lifespan configures logging, creates the database session factory, and builds service adapters: model provider, object storage, OpenAI embedder, and Qdrant index. The Qdrant adapter creates the configured collection if it does not exist. The current OpenAI `text-embedding-3-large` setup uses 3,072 dimensions with cosine distance.
+
+The worker is a separate Celery process. It listens on Redis and creates the same service adapters when it receives an ingestion task. The default embedding model is OpenAI `text-embedding-3-large`; embedding requests use `OPENAI_API_KEY` and send extracted text, table representations, and generated image descriptions to OpenAI. OpenAI documents `text-embedding-3-small` and `text-embedding-3-large`, not a medium tier. The selected vision/chat provider defaults to OpenAI and is selected with `MODEL_PROVIDER` (`openai`, `groq`, or `gemini`) and the matching API key/model settings in `.env`. This provider is used to describe images and generate answers.
+
+2. Uploading a PDF
+------------------
+
+In the browser, choose a PDF and click “Process documents.” The UI sends it as multipart form data to `POST /api/v1/documents`. The API reads the upload, then validates its size, extension, declared MIME type, and PDF signature (`%PDF-`). Current defaults include a 50 MiB maximum upload, a 300-page PDF maximum, and 144 DPI for PDF rendering; settings can override these values.
+
+The API computes a SHA-256 checksum. If that checksum is already registered, it reuses the existing document and job. Otherwise, it:
+
+1. Creates a document ID and job ID.
+2. Writes the original PDF bytes to RustFS, under a key like `documents/<document-id>/source.pdf` in the configured bucket (default `rag-assets`).
+3. Adds a document row and queued ingestion job row in PostgreSQL. The row includes filename, MIME type, checksum, object key, and status.
+4. Queues a Celery task on Redis and returns HTTP 202 with the job/document IDs and status.
+
+The API does not perform the expensive extraction itself. The browser opens `GET /api/v1/ingestions/<job-id>/events` using Server-Sent Events (SSE). The worker publishes progress to Redis Pub/Sub and the API forwards it over SSE, including an overall percentage, current stage, PDF page count, text chunk count, table chunk count, image record count, and total evidence records. The percentage advances through extraction, visual descriptions, embeddings, and indexing. Questions should be asked after status becomes completed/Ready.
+
+3. PDF extraction: text, tables, and images
+-------------------------------------------
+
+The Celery worker claims the queued job in PostgreSQL and changes the job and document statuses to processing. It downloads the original PDF from RustFS. Before rebuilding a retry, it deletes any prior Qdrant points and evidence rows for the document, so partial ingestion is rebuilt cleanly.
+
+`PdfExtractor` uses two methods:
+
+* Unstructured's `partition_pdf` in `hi_res` mode identifies semantic text elements, tables, and embedded images, carries page metadata, and performs OCR for scanned content. Table structure inference is enabled. Table HTML is preferred when available because it preserves row/header relationships.
+* PyMuPDF renders every page to a PNG at the configured DPI. These page images preserve charts, diagrams, and other vector graphics that may not exist as embedded raster images.
+
+The resulting evidence is page-aware. Text is split with LangChain's recursive character splitter into chunks up to 1,800 characters with 180 characters of overlap. Tables are represented as HTML/text and split while repeating the header rows where possible. This supports searching long tables without losing their column context. Page renders and extracted image blocks are image evidence.
+
+4. Where each kind of data is stored
+------------------------------------
+
+There are three distinct persistence systems; Qdrant is the vector database, not the place where the original PDF is stored.
+
+* RustFS object store: keeps original uploaded PDFs and original extracted images/page-render PNGs. Source keys look like `documents/<document-id>/source.pdf`; derived visual asset keys look like `assets/<document-id>/<page>/<evidence-id>.png` (or jpg/webp as appropriate). The actual image bytes live here.
+* PostgreSQL: stores document/job state and an evidence row for each text chunk, table chunk, or image summary. Evidence rows include a stable evidence ID, document ID, kind (`text`, `table`, or `image`), page number, filename, text content, object key (for images), and MIME type. It does not store the image bytes in these evidence rows.
+* Qdrant: stores one vector point per evidence item, along with a payload containing evidence ID, document/file/page/type, text content, and image object key/MIME where applicable. It stores image summaries and references, not the original image bytes. The vectors are generated from text content.
+
+PostgreSQL is also used for lexical/full-text retrieval. On PostgreSQL, the query uses PostgreSQL text search; a fallback implementation uses case-insensitive substring matching for other SQL dialects.
+
+5. Image handling during ingestion
+----------------------------------
+
+For an image or a rendered page, the worker stores the original image bytes in RustFS. It then sends those bytes to the configured vision provider with instructions to describe visible labels, numbers, table headers, axes, trends, and relationships, and to identify uncertainty. That textual description becomes the image evidence content. The worker embeds the description, not raw pixels, and writes the vector/payload to Qdrant and the metadata/description to PostgreSQL.
+
+The original image remains in RustFS so it can later be attached to an answer request. This two-part design makes the image summary searchable by text while retaining the original visual evidence for the model to inspect again when answering. Because every page is rendered, image-summary calls and image storage can grow with PDF page count.
+
+6. Making ingestion visible only when complete
+----------------------------------------------
+
+Each Qdrant point is initially written with `ready=false`. After all evidence extraction, image summaries, embeddings, database writes, and vector writes succeed, the worker marks the document and job completed and changes that document's Qdrant points to `ready=true`. Retrieval searches only ready points and also checks that their PostgreSQL document row is completed. This prevents a partially processed PDF from being used to answer questions.
+
+Celery retries task failures with backoff (up to five retries in the current task configuration). After a final failure, the job/document is marked failed and the job stores a short error message. The SSE stream reports the failure and its error message to the browser.
+
+7. Asking a question
+--------------------
+
+The browser sends a text question to `POST /api/v1/chat`. If the user attaches images, it calls `POST /api/v1/chat/multimodal`; those images are request-scoped and are not saved as PDF evidence. Both endpoints have streaming variants (`/chat/stream` and `/chat/multimodal/stream`) that send status, generated answer deltas, and the final response over SSE. The request creates a memory state, invokes the LangGraph chat router, then saves the user/assistant turn and refreshes memory.
+
+LangGraph (`app/query/graph.py`) has three nodes: a router, a general-answer agent, and a document RAG agent. The configured LLM router classifies every turn using the question, a small Qdrant/PostgreSQL evidence probe, completed source filenames, attached-image presence, and short- and long-term conversation memory. It chooses the general agent for ordinary knowledge questions and the RAG agent for questions about the indexed domain or attached visuals. The general agent answers with the selected chat model without receiving retrieved document passages or citing documents. The RAG agent runs the following process in `QueryService`:
+
+1. Embed the question with the same OpenAI `text-embedding-3-large` model used during ingestion.
+2. Ask Qdrant for semantic matches and search PostgreSQL evidence text for lexical matches.
+3. Fuse the ranked lists using reciprocal rank fusion, remove evidence that does not belong to a completed document, and keep the best results.
+4. Build an allowlist of retrieved evidence IDs and format each result with filename, page number, evidence type, and content. For retrieved image evidence, fetch original image bytes from RustFS. Attach those images and any user-provided images, subject to the provider's image limit.
+5. Ask the configured vision/chat model to answer from the retrieved evidence. The API validates returned citation IDs against the allowlist and returns page-level source citations. If requested document evidence is missing, it returns an insufficient-evidence response instead of guessing.
+
+For a Groq provider the current configuration allows up to two user images and three images total; other providers allow up to three user images and eight total images.
+
+8. Does the app save the generated answer?
+-----------------------------------------
+
+The API persists every user question and assistant answer in PostgreSQL `conversation_messages`, associated with the selected `conversation_threads` row. Each graph invocation receives the latest eight exchanges plus the thread's rolling summary. Long-term semantic facts/preferences, episodic events, and procedural guidance are stored in PostgreSQL `long_term_memories`; their embeddings and payloads are synchronized to Qdrant's separate memory collection. Both graph agents receive this memory state. This database-backed design survives thread switching and API restarts; LangGraph's in-memory graph state is only for the active request.
+
+9. Flow at a glance
+-------------------
+
+    docker compose up --build
+      -> PostgreSQL / Redis / Qdrant / RustFS start
+      -> API applies Alembic migrations and starts FastAPI
+      -> Celery worker listens to Redis
+      -> browser uploads PDF to FastAPI
+      -> original PDF saved in RustFS; document + job saved in PostgreSQL
+      -> ingestion task queued in Redis
+      -> worker reads PDF from RustFS
+      -> Unstructured extracts text/tables/images; PyMuPDF renders pages
+      -> text/table chunks stored as evidence; visual bytes saved in RustFS
+      -> vision model creates image descriptions
+      -> OpenAI text-embedding-3-large embeds all evidence text
+      -> evidence rows in PostgreSQL + vectors/payloads in Qdrant
+      -> vectors marked ready and document marked completed
+      -> question embedded by OpenAI; Qdrant semantic + PostgreSQL lexical search
+      -> retrieved originals + text evidence sent to configured vision/chat model
+      -> validated answer and citations returned to browser
+
+Useful local URLs
+-----------------
+
+* Web interface: http://localhost:8000/
+* API reference: http://localhost:8000/docs
+* Health check: http://localhost:8000/api/v1/health
+* RustFS console: http://localhost:9001/
+* Qdrant HTTP port: http://localhost:6333/
+
+Configuration caveat: the Docker Compose `.env` values determine database, Redis, Qdrant, and RustFS addresses/credentials inside the containers. `OPENAI_API_KEY` is required for embeddings and, when OpenAI is the selected vision/chat provider, for image descriptions and answers. Changing the embedding model or vector dimension requires a matching Qdrant collection and complete re-embedding because vectors from different embedding models cannot safely be mixed. Run `docker compose exec api python -m app.reindex` to rebuild the configured collection from evidence already stored in PostgreSQL.
+
+
+10. A concrete example: ask about a chart in a PDF
+--------------------------------------------------
+
+Imagine page 4 of `sales-report.pdf` has a line chart titled “Quarterly revenue,” with quarters Q1–Q4 and values $2M, $2.5M, $3M, and $4M. It may also have explanatory text and a table nearby. Here is what this application does with that page.
+
+During upload, the complete PDF is first stored as one object in RustFS, for example:
+
+    bucket: rag-assets
+    key: documents/abc123/source.pdf
+
+PostgreSQL gets a document row identifying `sales-report.pdf`, its checksum, source object key, and current status. It also gets an ingestion-job row. These rows do not contain the PDF bytes.
+
+The worker downloads that PDF and processes each page. For page 4, Unstructured may produce separate text elements, a table element, and an embedded image element if the chart is represented as an image in the PDF. Independently, PyMuPDF renders the whole page to a PNG. The page render is important: many charts are drawn from vector lines and text, so they may not exist as a separate embedded image for Unstructured to extract. Rendering turns the visible page, including that vector chart, into image pixels.
+
+The worker can therefore create several evidence items for that page:
+
+* Text evidence, such as “Quarterly revenue increased through the year.” Long text is split into chunks. Each chunk is an independent searchable evidence item.
+* Table evidence, if there is a table. It uses extracted HTML when available, preserving the association between headers and rows. Long tables are split by rows, with the header repeated where possible.
+* Image evidence for extracted image blocks and for the rendered page. For each image evidence item, the actual PNG/JPEG/WebP bytes are saved in RustFS. The provider then describes what is visible. For the example chart, a useful description might be “Line chart titled Quarterly revenue; Q1 $2M, Q2 $2.5M, Q3 $3M, Q4 $4M; the line rises each quarter.” That description is generated by the configured model; the example wording here is illustrative, not a guaranteed exact output.
+
+For one rendered page image, the stored records are conceptually like this:
+
+    RustFS object:
+      key = assets/abc123/4/<evidence-id>.png
+      bytes = original rendered page image
+
+    PostgreSQL evidence row:
+      id = <evidence-id>
+      document_id = abc123
+      filename = sales-report.pdf
+      page_number = 4
+      kind = image
+      content = "Line chart titled Quarterly revenue ... Q4 $4M ..."
+      object_key = assets/abc123/4/<evidence-id>.png
+      mime_type = image/png
+
+    Qdrant point:
+      id = representation of <evidence-id>
+      vector = embedding of the description text above
+      payload = evidence/document IDs, filename, page 4, kind=image,
+                description text, RustFS object key, MIME type, ready flag
+
+The PostgreSQL evidence row and Qdrant payload contain searchable text and a pointer to the image; neither contains the image bytes. RustFS holds those bytes. This is how a vector search result can identify the image to load later. The same split applies to an embedded chart image. If the page has text or a table, those evidence items also get PostgreSQL rows and Qdrant points, but they have no image object key unless they are image evidence.
+
+The worker computes an embedding from every evidence item's text content. For text/table evidence that is the extracted text/table representation. For image evidence it is the provider-generated visual description. Qdrant thus searches chart descriptions as text vectors; it does not directly search pixels. It also stores text in its payload so the result can be used without a second lookup for that content. PostgreSQL keeps the authoritative evidence rows and is also searched lexically for words/numbers.
+
+Now the user asks: “How much did revenue increase from Q1 to Q4?” The query path works as follows:
+
+1. OpenAI `text-embedding-3-large` turns the question into a vector. The meaning of “revenue increase,” “Q1,” and “Q4” can match the chart description even though the question does not say “line chart.”
+2. Qdrant searches ready image, text, and table evidence vectors for nearby meanings. It may find the page 4 chart description and/or nearby text/table chunks. PostgreSQL also searches evidence text for matching words such as “revenue,” “Q1,” and “Q4.”
+3. The application fuses those rankings and selects the best evidence. It checks that the corresponding document is completed. The chart result supplies page 4, evidence ID, and RustFS object key.
+4. Because that result is `kind=image`, the query service reads its original PNG bytes from RustFS. It sends the question, retrieved description/text/table content, and the original page/chart image to the configured vision model. The original visual lets the model inspect the chart itself—axis labels, plotted values, line direction, and context—instead of relying only on the earlier description. If the user attached images to a multimodal question, those are also sent.
+5. The model is asked to answer only from supplied evidence and return evidence IDs as citations. The service accepts only IDs in its retrieved allowlist. The response might say: “Revenue rose from $2M in Q1 to $4M in Q4, an increase of $2M (100%).” It can cite the page 4 image evidence, and possibly a corroborating table/text evidence item if those were retrieved. The exact answer depends on the extracted evidence and model response.
+
+This distinction matters: the chart description helps the system FIND the relevant chart; the original stored chart image helps the answer model READ/VERIFY visual details after retrieval. The image is not turned into a vector of raw pixels in this code. If the chart description is poor or the question does not retrieve the matching page, the right image may not reach the model, and the system may return that it lacks sufficient evidence. A page render improves coverage of vector charts, but OCR/vision can still misread small labels, low-quality scans, or ambiguous axes.
+
+11. Storage summary by evidence type
+------------------------------------
+
+    Content             PostgreSQL                         RustFS                         Qdrant
+    ------------------  ----------------------------------  ------------------------------  -----------------------------------
+    PDF source          metadata + source object key         complete original PDF          no PDF bytes
+    Text chunk          extracted chunk + page/source IDs    no text asset needed           embedding + text/metadata payload
+    Table chunk         HTML/text + page/source IDs           no table asset needed           embedding + table text/metadata
+    Image/chart/page    visual description + object key      original image/page PNG bytes  embedding of description + pointer
+
+The chart row can be accompanied by a separate text row and table row from the same page. They have distinct evidence IDs and can be retrieved together. Citations point to evidence records and PDF page numbers, so the UI can show which document/page supported an answer.
+
+
+12. What the storage table means, in detail
+-------------------------------------------
+
+The short table above is easy to misread as three copies of every file. That is not what happens. Each store has a different job:
+
+* PostgreSQL is the structured metadata and evidence-text store. “Metadata” means facts that describe a document/evidence item and let the application track it: IDs, filename, page number, kind, status, checksum, and object key. PostgreSQL also stores the extracted text/table or visual description in the evidence row's `content` column.
+* RustFS is the object/file store. It holds the actual byte content of the uploaded PDF and actual image bytes for extracted images and rendered pages. An object key is the path-like name used to get those bytes back.
+* Qdrant is the vector search store. It holds the numerical embedding vector used for meaning-based similarity search, plus a payload (ordinary JSON-like fields) that identifies the evidence and carries its searchable text and storage references.
+
+“Vector” means a list of numbers produced from text by the embedding model. For example, a vector might conceptually look like `[0.12, -0.04, 0.31, ...]`; this is only an illustration, not the actual vector for a document. The configured `text-embedding-3-large` model produces 3,072 numbers. The vector itself is stored in Qdrant, not PostgreSQL and not RustFS. Qdrant stores one vector point for each text chunk, table chunk, and image description. The point's payload is stored alongside that vector in Qdrant.
+
+What exactly is metadata, and where is it stored?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+There are two related copies/uses of metadata:
+
+1. PostgreSQL has the application's document, job, and evidence records. This is where the application tracks authoritative document status and stores each evidence item's `id`, `document_id`, `kind`, `page_number`, `filename`, `content`, optional `object_key`, and optional `mime_type`. A document row also has its source PDF's `object_key`, checksum, and status. A job row records queue/processing/completion/failure state.
+2. Qdrant's point payload repeats the fields needed to interpret and return a vector search hit without first fetching every field from PostgreSQL. In this code, the payload includes `evidence_id`, `document_id`, `filename`, `page_number`, `kind`, `content`, `object_key`, `mime_type`, and `ready`.
+
+So metadata is not a separate service called “metadata store.” In this application, PostgreSQL stores the relational records; Qdrant also carries a copy of selected fields as each point's payload. The Qdrant payload does not replace the PostgreSQL evidence table: the query also checks PostgreSQL to confirm that returned document evidence belongs to a completed document, and PostgreSQL runs the lexical search.
+
+Where does each actual thing go?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+PDF source: the uploaded PDF's exact bytes go into a RustFS object, for example `documents/abc123/source.pdf`. PostgreSQL stores `abc123`, filename, checksum, status, MIME type, and that object key. Qdrant does not receive the PDF itself and does not create one vector for the whole PDF.
+
+Extracted text: each page-aware text chunk is stored as text in a PostgreSQL evidence row. Its text is embedded, and the resulting vector plus a Qdrant payload containing that text and its source/page identifiers are written as one Qdrant point. Text is not saved as a separate RustFS file.
+
+Table: each table chunk is stored as HTML/text in a PostgreSQL evidence row. The table text is embedded, and Qdrant stores its vector and a payload with the table text and source/page identifiers. The table is not stored as an image file unless Unstructured separately supplies a table image block; that visual block would be handled as image evidence too.
+
+Image/chart/page: the original bytes for the extracted image or rendered page PNG go into a RustFS object. PostgreSQL stores the image evidence row's generated description and object key. The generated description—not the pixels—is embedded. Qdrant stores that description's vector and a payload with the description plus object key/page/document identifiers. Therefore, searching can find the image by its description, then use its object key to fetch the original pixels.
+
+How are records in the three stores mapped to each other?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When the worker makes an evidence item, it computes a deterministic evidence ID from the document ID, page number, source element kind/ordinal, output chunk number, and the extracted/original evidence content at that stage. For image items, this happens before the provider replaces the placeholder such as “Rendered PDF page 4” with its generated visual summary. The evidence ID is the logical join key:
+
+    document ID: abc123
+       |
+       +-- PostgreSQL documents row
+       |     source object_key -> documents/abc123/source.pdf
+       |
+       +-- PostgreSQL evidence row, id = <evidence-id>
+       |     page=4, kind=image, content=<visual description>
+       |     object_key -> assets/abc123/4/<evidence-id>.png
+       |
+       +-- Qdrant point for the same evidence ID
+             vector = embedding(<visual description>)
+             payload.evidence_id = <evidence-id>
+             payload.document_id = abc123, page_number = 4
+             payload.object_key = assets/abc123/4/<evidence-id>.png
+
+For Qdrant's point ID, the code converts the first 32 hexadecimal characters of the evidence ID to UUID format because Qdrant point IDs must be UUIDs or unsigned integers. The full evidence ID remains in the payload and PostgreSQL row. The application uses the full evidence ID for evidence matching and citations; the Qdrant point UUID is Qdrant's internal point identifier.
+
+The image object key is a pointer, not the image. The object key written into PostgreSQL and Qdrant must match the RustFS key. The evidence ID in PostgreSQL and Qdrant payload must match too. These shared identifiers are how the application connects vector-search results to a page citation and, when needed, the original image file.
+
+What happens when a question comes in? Full store-by-store trace
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Use the example question: “What was the highest revenue quarter in this report, and what was the value?” Suppose the chart description stored for page 4 says that the chart has Q1 $2M, Q2 $2.5M, Q3 $3M, and Q4 $4M.
+
+1. The query service sends the question to OpenAI `text-embedding-3-large` and receives a 3,072-number vector. It does not search for the PDF file in RustFS, and it does not search raw image bytes.
+2. The query vector is sent to Qdrant. Qdrant compares it with stored evidence vectors and returns nearby points. One result might be the page 4 chart-description point; other results could be prose or table points. Qdrant's result includes the point payload, so the application gets the evidence ID, content/description, page, document ID, kind, and object key for an image result.
+3. Separately, the query service asks PostgreSQL for lexical matches using terms in the question. On PostgreSQL this uses text search over `evidence.content`. This can find exact words, labels, and values. The service merges the Qdrant and PostgreSQL ranked results with reciprocal rank fusion, deduplicates by evidence ID, and keeps the configured number of results.
+4. The service checks the selected evidence IDs against PostgreSQL evidence joined to the documents table, requiring `DocumentRecord.status == completed`. This filters out incomplete/failed documents. The lookup is also how the service verifies that the evidence belongs to a completed document.
+
+13. Image results in the browser and the OpenAI embedding change
+---------------------------------------------------------------
+
+When a returned citation has type `image`, the browser shows the original stored visual directly in the answer, with only the PDF filename/page citation for context. It does not print the generated image description as a substitute for the visual. Clicking the image opens it full size. Ingestion progress is streamed from `GET /api/v1/ingestions/<job-id>/events`; the UI displays extraction, image-description, embedding, and indexing stages. Embedding requests and Qdrant writes are batched, while visual descriptions are generated with limited concurrency. The browser requests `GET /api/v1/evidence/<evidence-id>/image`; the API checks that the evidence is an image from a completed document, reads its object key from PostgreSQL, fetches the bytes from RustFS, and returns them as an image response. See `app/static/app.js` for the display and `app/api/routes.py` for the endpoint. Page renders show the full rendered PDF page (not a cropped chart), so the displayed image is the visual evidence indexed for that page.
+
+The generated description remains internal to retrieval and helps Qdrant find the image. The citation response carries the source PDF and page; the browser displays the actual image rather than its generated description. The answer prompt asks the model to identify the relevant chart, give visible metric/time-period details, and avoid unrelated citations.
+
+OpenAI documents `text-embedding-3-small` and `text-embedding-3-large`; there is no “medium” tier in its documented text embedding models. This project is configured for `text-embedding-3-large`, with 3,072 dimensions. OpenAI says the default vector length is 3,072 for large and 1,536 for small. These embeddings represent extracted text, tables, and image descriptions; they do not embed image pixels. The image itself still reaches the vision/chat model after retrieval.
+
+The Qdrant collection is named `multimodal_rag_openai_large` so it can use the new dimension without clashing with an older 384-dimension collection. To embed existing PostgreSQL evidence into this new collection while preserving PDFs and images, start/rebuild the stack and run:
+
+    docker compose up --build -d
+    docker compose exec api python -m app.reindex
+
+The reindex command reads each completed document's evidence text from PostgreSQL, requests a new OpenAI embedding, and writes vectors and their payloads to the configured Qdrant collection. OpenAI API usage applies to each embedding request. Newly uploaded documents are indexed automatically with the same model.
+
+14. Verified example from the supplied 2024 GTM PDF
+--------------------------------------------------
+
+I inspected the actual file `2024 GTM Benchmarks - OnlyCFO's Newsletter.pdf`. It is a 13-page PDF. Page 2 contains a chart titled “Top Quartile YoY ARR Growth” and says the chart is benchmark data from ICONIQ's most recent report (as described by that 2024 newsletter). The PDF itself is an OnlyCFO newsletter excerpt, not the complete ICONIQ report. Its date is August 20, 2024, so “most recent” is the newsletter's wording at that time, not a claim that this remains ICONIQ's newest report today.
+
+The chart shows top-quartile year-over-year ARR growth:
+
+    ARR cohort        2023    2024    change
+    <$25M              253%    168%    -85 percentage points
+    $25M-$100M          71%     54%    -17 percentage points
+    $100M-$200M         37%     27%    -10 percentage points
+    likely >$200M*     35%     30%    -5 percentage points
+
+The first three cohort pairs are legible in the chart. The newsletter's next page says at-scale ARR growth moved from 35% in 2023 to 30% in 2024. The far-right chart heading is clipped in the supplied PDF view; `>$200M` is an inference from the visible `$20...` heading and the at-scale description, so treat that cohort label as less certain than the first three. Page 2 is the chart the application should show for the user's question about ICONIQ benchmark data. A different chart, “Median NRR,” is on page 5 and shows 122% in 2021, 119% in 2022, and 110% in 2023; that is relevant to NRR questions, not the ARR-growth chart request.
+
+The incorrect answer quoted later-page caveats about the limitations of private-company benchmarks (pages 10-12), instead of giving the requested page-2 ARR growth figures. The likely retrieval failure is that text-only caveat chunks outranked the chart evidence and the answer cited only those text chunks. The query service now recognizes requests like “also show chart,” ensures the highest-ranked retrieved image evidence is included when available, and adds that image to citations even if the model omits the citation ID. The browser displays that citation as a clickable original-page preview. The answer instructions also request clear cohort/year/value pairs and distinguish the newsletter excerpt from the original ICONIQ report.
+
+For this exact query, a grounded response should summarize the four cohorts above and display the page-2 image citation. It should not answer with the caveats alone. If page 2 is not present in retrieved evidence after reindexing, the app still cannot display it; check that the document is Ready and that the page-2 image evidence was indexed in Qdrant.
+
+15. Conversation threads and short-/long-term memory
+--------------------------------------------------
+
+The chat uses persistent threads so follow-up questions can carry context. The browser keeps the active thread ID in local storage, loads prior turns from `GET /api/v1/threads/{thread_id}`, and sends that ID with each `/api/v1/chat` or `/api/v1/chat/multimodal` request. `POST /api/v1/threads` starts a fresh conversation; `GET /api/v1/threads` lists the available threads.
+
+PostgreSQL owns the source of truth for conversation state:
+
+    conversation_threads
+      id, owner_id, title, rolling summary, number of messages summarized, timestamps
+
+    conversation_messages
+      id, thread_id, role, text, citation JSON, timestamp
+
+    long_term_memories
+      id, owner_id, source thread/message, memory type, text, deduplication fingerprint, timestamp
+
+Each incoming turn is saved before answer generation. The service gives the answer model up to the last eight exchanges plus the thread's rolling summary. Once enough unsummarized messages accumulate, a summary step condenses older turns while retaining the newest turns verbatim. This is short-term thread memory: it lets follow-ups such as “what about 2023?” refer to the previous benchmark without resending the entire conversation every time.
+
+When a thread has history, an LLM decides whether the question needs context and rewrites it as a standalone search query when needed. The rewritten query is embedded and sent to Qdrant and used in PostgreSQL full-text retrieval; the original wording remains the question answered by the model. This is what makes a follow-up such as “show that chart again” retrieve based on the prior topic rather than searching for the isolated word “that.”
+
+Long-term memory has three categories. Semantic memories store stable user facts, preferences, goals, and project facts. Episodic memories store notable events, decisions, actions, and outcomes from an interaction. Procedural memories store durable instructions, workflows, and preferred ways to perform a task. The LLM extractor examines each interaction for useful durable memories. Memory text and category are stored in PostgreSQL; its embedding and payload (memory ID, owner ID, source thread ID, type, text, and timestamp) are stored in a separate Qdrant collection named `<QDRANT_COLLECTION>_memory`. A query searches each category under the same owner ID and combines the results so a high volume of one memory type cannot crowd out the others. The memory ID links each Qdrant point to its PostgreSQL source. A category-aware fingerprint avoids duplicate records, and `vector_synced` lets the app retry vector writes after a Qdrant outage.
+
+The memory retrieval and evidence retrieval remain separate. Relevant memories are placed in the answer prompt as categorized conversation context and can resolve references or honor preferences/workflows. They are not allowed as citations and cannot be used as proof about the content of uploaded PDFs; document claims still need current retrieved evidence. If a question can be answered only from prior chat memory and no document evidence is retrieved, the answer is allowed with an empty citation list.
+
+The UI's **Memory** panel lists saved memories by category and can delete an individual record from both PostgreSQL and Qdrant. **Forget all** calls `DELETE /api/v1/memory`, which deletes all local memory vectors, memory rows, conversation messages, thread summaries, and thread records. Clearing the entire thread is necessary: otherwise a detail removed from long-term memory could still be reconstructed from the old conversation transcript. This endpoint is scoped to the current local owner. It clears application data, not source PDFs or document evidence.
+
+In this repository, the local Compose UI has no login system and uses `owner_id=local`. This is appropriate only for the current single-user local setup. A multi-user deployment must authenticate users and replace that constant with the authenticated user subject in thread lookup, memory storage, and Qdrant filters; otherwise all users would share one memory namespace.
+
+The implementation is in `app/query/memory.py`, `app/query/service.py`, `app/api/routes.py`, `app/db/models.py`, and `app/vector/qdrant_index.py`. Alembic migration `0002_conversation_memory` creates the three PostgreSQL tables; `0003_memory_vector_sync` adds retry tracking for memory vectors. On API startup, the existing container entrypoint runs Alembic and the vector index initializes the separate Qdrant memory collection. Deploy the code and migrations with:
+
+    docker compose up -d --build --force-recreate api worker
+
+No document reindex is required for conversation memory; existing uploaded evidence and PDFs remain in place.
+5. For each selected result, the service builds a source string such as `[<evidence-id>] source=sales-report.pdf page=4 type=image` followed by the stored visual description. This text goes into the answer prompt. For a text/table hit, the extracted chunk/table content goes into the prompt too.
+6. For a selected image hit, the service takes `object_key` from the Qdrant result payload and calls RustFS `get(object_key)`. RustFS returns the actual PNG/JPEG/WebP bytes. Those original bytes are attached to the provider request. The image bytes were not embedded into the prompt as text and were not kept inside PostgreSQL/Qdrant.
+7. The selected provider receives the question, textual evidence, and retrieved original image(s). It can inspect the chart image at answer time. This is the second vision step: ingestion vision produced a text description for search; answer-time vision sees the original visual to read/verify chart details. The model is told to cite only the evidence IDs included in the prompt.
+8. The application parses the returned JSON and drops any citation ID that was not among the retrieved evidence IDs. It returns the accepted answer and citation details (including document filename and page) to the client. If no adequate evidence or valid citation remains, it returns the insufficient-evidence response.
+
+In this example, the generated answer could be “Q4 had the highest revenue at $4M.” Its citation references the image evidence ID for page 4, and may also reference a table/text evidence ID if one was retrieved and cited. The response is returned to the UI and the user/assistant turns plus citation data are persisted in the active conversation thread.
+
+Why both the description and original image are needed
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Qdrant needs a vector to find potentially relevant content. This application uses a text embedding model, so it embeds the visual description of a chart rather than the chart's raw pixels. The description makes a question like “which quarter was highest?” semantically searchable even if the PDF has no selectable text for the chart itself.
+
+After finding the description, the answer model gets the original image so it can interpret visual details. If it only got the description, it could not independently inspect the lines, legends, axes, or small labels. If it only had image bytes but no searchable description/vector, the normal text-question retrieval could have trouble deciding which of many stored page images to load. The combination provides a text-searchable index and visual evidence at answer time.
+
+The current implementation indexes whole-page renders as image evidence, not cropped chart regions. Thus a page image may contain unrelated material alongside the target chart. Also, image descriptions and answers depend on the selected provider, and chart reading can fail when labels are tiny/unclear. The system's citation validation limits citations to retrieved evidence, but it cannot guarantee the model interpreted every visual value correctly.

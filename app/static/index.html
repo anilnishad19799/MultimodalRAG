@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f5f2">
+  <title>Multimodal RAG</title>
+  <link rel="stylesheet" href="/static/app.css?v=20261015-independent-panels">
+  <script src="/static/app.js?v=20261015-sse-stream" defer></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Multimodal RAG home">
+        <span class="brand-mark">M</span>
+        <span>Multimodal <strong>RAG</strong></span>
+      </a>
+      <a class="api-link" href="/docs" target="_blank" rel="noreferrer">API docs <span aria-hidden="true">↗</span></a>
+    </header>
+
+    <section class="intro">
+      <div class="eyebrow"><span class="live-dot"></span> PRIVATE DOCUMENT WORKSPACE</div>
+      <h1>Ask your documents<br><span>anything.</span></h1>
+      <p>Ask general questions directly, or upload a PDF to ask domain questions grounded in its text, tables, and visuals.</p>
+    </section>
+
+    <div class="workspace">
+      <section class="panel upload-panel" aria-labelledby="upload-heading">
+        <div class="panel-heading">
+          <div class="step">01</div>
+          <div><h2 id="upload-heading">Add documents</h2><p>PDFs and standalone images</p></div>
+        </div>
+        <form id="upload-form">
+          <label class="dropzone" id="dropzone" for="document-files">
+            <span class="upload-icon" aria-hidden="true">↑</span>
+            <span class="drop-title">Drop files here or <u>browse</u></span>
+            <span class="drop-note">PDF, PNG, JPG, or WebP · select multiple files</span>
+            <input id="document-files" name="files" type="file" accept="application/pdf,.pdf,image/png,image/jpeg,image/webp" multiple>
+          </label>
+          <div id="upload-selection" class="selection hidden"></div>
+          <button class="button button-primary full-width" type="submit" id="upload-button" disabled>
+            <span>Process documents</span><span aria-hidden="true">→</span>
+          </button>
+          <p class="fine-print">Processing runs in the background. Keep this page open to watch progress.</p>
+        </form>
+        <div class="documents-heading"><h3>Your documents</h3><span id="document-count" class="count">0</span></div>
+        <div id="document-list" class="document-list" aria-live="polite">
+          <div class="empty-state" id="documents-empty">Your uploaded files will appear here.</div>
+        </div>
+      </section>
+
+      <section class="panel chat-panel" aria-labelledby="chat-heading">
+        <div class="panel-heading chat-title-row">
+          <div class="step">02</div>
+          <div><h2 id="chat-heading">Ask a question</h2><p>Domain answers include page-level source citations</p></div>
+          <span class="model-badge"><span class="live-dot"></span> READY</span>
+        </div>
+        <div class="thread-toolbar">
+          <select id="thread-select" aria-label="Conversation history"></select>
+          <button type="button" id="new-thread" class="thread-new">New chat</button>
+          <button type="button" id="memory-toggle" class="thread-new">Memory</button>
+        </div>
+        <section id="memory-manager" class="memory-manager hidden" aria-label="Saved memory">
+          <div class="memory-manager-heading"><strong>Long-term memory</strong><button type="button" id="forget-all-memory">Forget all</button></div>
+          <p>These saved details can be recalled across threads.</p>
+          <div id="memory-list" class="memory-list"></div>
+        </section>
+        <div class="chat-content" id="chat-content">
+          <div class="welcome" id="chat-welcome">
+            <div class="welcome-icon" aria-hidden="true">✳</div>
+            <h3>Ask the right agent.</h3>
+            <p>General questions go to the general agent. Questions about your uploaded sources go to the document RAG agent.</p>
+            <div class="example-question"><span>Try asking</span><button type="button" class="suggestion">“Why is the sky blue?” <span>↗</span></button></div>
+          </div>
+          <div id="messages" class="messages" aria-live="polite"></div>
+        </div>
+        <div id="chat-gate" class="chat-gate hidden"></div>
+        <form id="chat-form" class="composer" aria-label="Ask a question">
+          <textarea id="question" rows="2" maxlength="20000" placeholder="Ask a general question…" required></textarea>
+          <div class="composer-bottom">
+            <div class="attachment-area">
+              <label class="attach-button" for="chat-images" title="Attach image" aria-label="Attach an image">＋</label>
+              <input id="chat-images" type="file" accept="image/png,image/jpeg,image/webp" multiple>
+              <span id="attachment-label" class="attachment-label">Add an image</span>
+            </div>
+            <button class="button button-send" id="send-button" type="submit"><span>Ask</span><span aria-hidden="true">↑</span></button>
+          </div>
+          <div id="attachment-preview" class="attachment-preview hidden"></div>
+        </form>
+        <p class="chat-note">General answers use the LLM. Answers about uploaded documents use retrieved evidence and citations.</p>
+      </section>
+    </div>
+    <footer>Files and API keys stay in your configured backend storage. <span>·</span> <a href="/docs">Open API reference</a></footer>
+  </main>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
