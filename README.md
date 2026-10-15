@@ -1,70 +1,228 @@
 # Multimodal RAG
 
-FastAPI service for page-aware PDF and image ingestion, multimodal retrieval, general questions, and grounded answers with citations. A LangGraph router sends ordinary questions to a general-answer agent and indexed-corpus questions to a document RAG agent. Unstructured partitions PDFs into semantic elements, tables, OCR text, and image blocks; LangChain Documents and text splitters preserve metadata as text is chunked. Ingestion uses the configured vision provider to describe visual evidence; retrieval indexes text, table representations, and image summaries while keeping the original assets in object storage.
+A local-first, Docker Compose application for uploading PDFs and images, searching their text and visual content, and asking questions in a persistent chat. A LangGraph router selects either a general-answer agent or a document-grounded RAG agent. The browser UI streams chat output and ingestion progress.
 
-## Run with Docker Compose
+## Features
 
-1. Copy `.env.example` to `.env`.
-2. Set `MODEL_PROVIDER` to `openai`, `groq`, or `gemini`, and set the matching key. `OPENAI_API_KEY` is required for embeddings even when another provider is selected; `GROQ_API_KEY` or `GEMINI_API_KEY` is additionally needed when choosing those providers for vision/chat. The selected model setting can be changed for provider account/model availability. Keys stay on the server.
-3. Run `docker compose up --build`.
-4. Open `http://localhost:8000` for the upload and chat interface. Open `http://localhost:8000/docs` for the API reference, or `http://localhost:9001` for the RustFS development console.
+- **PDF and image ingestion:** accepts PDF, PNG, JPEG, and WebP. PDF extraction uses Unstructured's high-resolution partitioner for layout, text, tables, and OCR, and PyMuPDF renders pages to retain charts and diagrams.
+- **Multimodal retrieval:** stores extracted text and table representations, image descriptions, and source metadata. At answer time, retrieved original images can be sent to the vision/chat model and displayed with citations.
+- **Hybrid search:** combines OpenAI embeddings in Qdrant with PostgreSQL full-text search. The model must cite retrieved evidence for document-grounded answers; citations are checked against the retrieved evidence and repeated citations to the same source page are collapsed.
+- **General and document agents:** a LangGraph LLM router sends general questions to the general-answer agent and questions requiring uploaded-source evidence to the document RAG agent.
+- **Conversation memory:** maintains recent turns and an LLM-generated thread summary. LLM-extracted semantic, episodic, and procedural memories are stored in PostgreSQL and searched in a dedicated Qdrant memory collection across threads.
+- **Live UI updates:** PDF ingestion progress uses Server-Sent Events (SSE), including stage, percentage, and available page/text/table/image counts. Chat responses stream as the model generates them.
+- **Local services:** PostgreSQL stores records and metadata, Qdrant stores vectors, Redis carries Celery jobs and progress events, and RustFS stores original PDF and image objects through an S3-compatible API.
 
-In the web interface, you can ask general questions immediately. To ask about your own material, add PDFs or images and choose **Process documents**, then wait for the document's status to become **Ready**. The LangGraph router selects a general answer for ordinary knowledge questions and the RAG agent for questions about indexed sources. Attaching an image sends the question and image through the multimodal RAG agent. Document answers include filenames, page numbers, and evidence types in their citations.
+## Requirements
 
-The chat panel keeps conversations in threads. Use **New chat** to start a separate conversation or choose a prior one from the history menu. Thread history survives browser reloads. Ingestion status and progress reach the browser over Server-Sent Events (SSE), without repeated browser polling. Chat answer text streams to the UI as the model generates it. PDF embeddings and Qdrant writes are batched, and image descriptions run with limited concurrency. A thread keeps recent turns and a rolling summary for short-term context; semantic facts/preferences, episodic events/decisions, and procedural instructions/workflows are extracted by an LLM from each interaction, stored in PostgreSQL, embedded into a dedicated Qdrant memory collection, and recalled across threads. Open **Memory** to review or delete individual records, or use **Forget all** to erase all memories and conversation threads. Memory helps resolve references and personalize answers; it is not treated as evidence about uploaded documents.
+- Docker Desktop with Docker Compose v2, or Docker Engine and the Compose plugin.
+- An OpenAI API key for embeddings.
+- An API key for the selected chat and vision provider: OpenAI, Groq, or Gemini.
+- Internet access during the first image build and first PDF processing. The image build downloads CPU-only PyTorch dependencies; PDF layout processing can download model assets at runtime.
 
-The default embedding model is OpenAI `text-embedding-3-large`; it uses `OPENAI_API_KEY` and produces 3,072-dimension vectors by default. OpenAI currently documents small and large embedding tiers, not a medium tier. The model embeds extracted text, table representations, and generated image descriptions; the vision/chat provider still describes images and generates answers. Unstructured's local high-resolution PDF partitioning may download layout model weights on first use and is CPU-intensive. Changing the embedding model requires a matching Qdrant collection and re-embedding because vector spaces are not interchangeable.
+Allow several gigabytes of disk space for Docker images, model cache, uploaded files, and database/vector data. High-resolution PDF parsing can use substantial CPU and memory, especially for long or scanned PDFs.
 
-The Compose credentials and exposed service ports are for local development. Use managed credentials, TLS, access control, backups, and network restrictions before exposing the stack beyond a trusted machine. Database schema changes are applied by Alembic at API startup.
+## Quick start
 
-## End-to-end flow
+From the repository root:
 
-1. `POST /api/v1/documents` accepts a PDF or standalone PNG/JPEG/WebP. It validates size, extension, MIME type, and content signature; stores the source object; and queues an idempotent ingestion job.
-2. Unstructured partitions PDF pages into text, tables, OCR text, and image elements while preserving page metadata. PyMuPDF renders every page to additionally capture vector charts/diagrams. The ingestion service retains source filename, document ID, page number, MIME type, and original object key.
-3. Image assets and rendered pages are sent to the selected vision model for searchable textual descriptions. Text chunks, Markdown table representations, and visual summaries are embedded with OpenAI and indexed in Qdrant. Evidence records and job state are persisted in PostgreSQL. Vector records are not searchable until the document finishes indexing.
-4. On chat, `LangGraphChatRouter` runs a classifier node with the question, indexed filenames, and conversation memory. It dispatches to `GeneralAnswerAgent` for ordinary knowledge questions or `DocumentRAGAgent` for questions about indexed material. User-attached images and visual requests go to the RAG agent.
-5. The LLM router classifies every turn using a small Qdrant/PostgreSQL evidence probe, completed source filenames, attached-image presence, and conversation context. The general agent answers from the selected LLM's general knowledge and can use memory for personal preferences or conversational references; it receives no retrieved document passages and does not cite document sources. The RAG agent uses Qdrant semantic retrieval plus PostgreSQL lexical search, fetches original image bytes from RustFS when needed, and asks the vision/chat model to answer only from retrieved evidence.
-6. The API validates RAG citations against the retrieved evidence allowlist and returns page-level citations. When requested document evidence is missing, it returns an insufficient-evidence response instead of inventing source facts.
+1. Create the local environment file:
 
-### LangGraph agents
+   ```bash
+   cp .env.example .env
+   ```
 
-`app/query/graph.py` defines a three-node graph: a router, a general-answer agent, and a document RAG agent. The configured chat model classifies every turn using completed source filenames, retrieved candidate snippets, attached-image presence, and saved conversation context. Each request includes the current thread's short-term memory and recalled long-term memory. The graph is compiled once during API startup; PostgreSQL remains the durable memory store, so memory survives API restarts and switching threads. LangGraph state is request-scoped and does not replace the database memory system.
+2. Edit `.env`. Set `OPENAI_API_KEY` and the key for `MODEL_PROVIDER` (`OPENAI_API_KEY`, `GROQ_API_KEY`, or `GEMINI_API_KEY`). OpenAI embeddings are used regardless of the selected chat/vision provider, so `OPENAI_API_KEY` is always required.
 
-## Conversation memory
+3. Build and start the services:
 
-- `conversation_threads` stores thread IDs, titles, and rolling summaries. `conversation_messages` stores user and assistant turns, citations, and timestamps.
-- Each turn includes the most recent eight exchanges. As older turns accumulate, a model-generated summary preserves the useful thread context.
-- The LangGraph router and both answer agents receive the short-term context and recalled long-term memories for each turn. An LLM can acknowledge a user statement such as “My name is Nishad Anil” and extract it as a semantic fact for PostgreSQL.
-- When a thread has history, an LLM decides whether a question needs context and rewrites it as a standalone retrieval query when needed. The rewritten query is used for Qdrant semantic search and PostgreSQL lexical search; the original question is still sent to the answer model.
-- Semantic facts/preferences, episodic events/decisions, and procedural instructions/workflows are stored as categorized records in PostgreSQL `long_term_memories`. Their vectors and owner-scoped payloads are stored in the separate `<QDRANT_COLLECTION>_memory` collection. Retrieval searches each category so one type cannot crowd out the others; relevant memories can be recalled across threads.
-- Threads are managed with `POST /api/v1/threads`, `GET /api/v1/threads`, and `GET /api/v1/threads/{thread_id}`. Chat accepts an optional `thread_id`, and its response returns the active thread ID.
-- `GET /api/v1/memories` lists saved records, `DELETE /api/v1/memories/{memory_id}` removes one record, and `DELETE /api/v1/memory` forgets all long-term memories and deletes all local conversation threads/messages so old details cannot be recalled from thread history.
+   ```bash
+   docker compose up --build -d
+   ```
 
-This app currently has no authentication, so memory uses one local owner namespace. That matches the local Compose setup, which binds the API to loopback. Before exposing it to multiple users, add authentication and use the authenticated subject as `owner_id` for every thread and memory operation; otherwise users would share memory.
+   The API applies Alembic migrations at startup. The first build may take several minutes because it installs CPU-only PyTorch and application dependencies.
 
-## API examples
+4. Check that the services are running and the API is ready:
 
-Upload a document:
+   ```bash
+   docker compose ps
+   curl http://localhost:8000/api/v1/health
+   ```
+
+5. Open the application at <http://localhost:8000>. The API reference is at <http://localhost:8000/docs>.
+
+Useful local service pages:
+
+- Qdrant: <http://localhost:6333/dashboard>
+- RustFS development console: <http://localhost:9001>
+
+The API and these host ports bind to loopback for local use. PostgreSQL and Redis are only exposed on the Compose network.
+
+## Configure `.env`
+
+The starting values are in [.env.example](.env.example). Change secrets before using the stack on a shared machine.
+
+| Variable | Purpose | Default/example |
+| --- | --- | --- |
+| `MODEL_PROVIDER` | Chat and vision provider: `openai`, `groq`, or `gemini` | `openai` |
+| `OPENAI_API_KEY` | OpenAI embeddings key; also the chat key when provider is OpenAI | Empty; required |
+| `GROQ_API_KEY`, `GEMINI_API_KEY` | Chat/vision key when the corresponding provider is selected | Empty |
+| `OPENAI_MODEL`, `GROQ_MODEL`, `GEMINI_MODEL` | Chat model name for the selected provider | See `.env.example` |
+| `EMBEDDING_MODEL` | OpenAI embedding model | `text-embedding-3-large` |
+| `EMBEDDING_DIMENSION` | Vector length created by the embedding model | `3072` |
+| `DATABASE_URL` | SQLAlchemy/PostgreSQL connection | Compose `postgres` service |
+| `CELERY_BROKER_URL` | Redis broker and progress Pub/Sub connection | Compose `redis` service |
+| `QDRANT_URL`, `QDRANT_COLLECTION` | Qdrant endpoint and evidence collection name | Compose `qdrant`; `multimodal_rag_openai_large` |
+| `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_BUCKET`, `S3_SECURE` | RustFS S3-compatible object storage | Compose `minio` service and local credentials |
+| `MAX_UPLOAD_BYTES`, `MAX_IMAGE_BYTES` | Maximum upload sizes in bytes | 50 MiB; 20 MiB |
+| `MAX_PDF_PAGES` | Maximum accepted PDF page count | `300` |
+| `PDF_RENDER_DPI` | Resolution used for page images | `144` (allowed: 72–300) |
+| `RETRIEVAL_LIMIT` | Maximum evidence records used to answer a document question | `8` |
+| `APP_ENV`, `LOG_LEVEL` | Runtime environment name and log verbosity | `development`, `INFO` |
+
+Keep `.env` private and do not commit it. Provider API keys stay in the backend; retrieved text and selected original images are sent to the configured chat/vision provider to generate answers and image descriptions.
+
+## Use the application
+
+### Upload a document
+
+1. In **Add documents**, select or drop a PDF or image and choose **Process documents**.
+2. Watch the row for its stage, percentage, and extraction/indexing counts. The browser receives updates over SSE; it does not repeatedly poll the status endpoint.
+3. Wait for the document to show **Ready**, then ask a question in the chat panel.
+
+General questions can be asked without uploading anything. For questions about a PDF, ask about the subject, page, table, chart, or other evidence in the uploaded source. For chart questions, ask to show the chart if you want the original retrieved image displayed with the answer.
+
+The chat panel supports separate threads. **New chat** starts a thread; the history menu returns to a saved thread. Use **Memory** to view or remove long-term memories. **Forget all** deletes the local owner's long-term memories and conversation threads/messages; it does not delete uploaded documents.
+
+### Data flow and storage
+
+| Data | PostgreSQL | RustFS | Qdrant |
+| --- | --- | --- | --- |
+| Uploaded PDF/image | Document metadata, checksum, object key, ingestion state | Original uploaded file bytes | Not stored |
+| Text chunk | Evidence content, document ID, page, kind, and source metadata | Not stored | Embedding plus searchable text/source payload |
+| Table chunk | Extracted HTML/text and page/source metadata | Not stored | Embedding plus searchable table text/source payload |
+| Image, chart, or rendered page | Description, MIME type, page/source metadata, and object key | Original extracted image or rendered page bytes | Embedding of its text description plus source pointer/metadata |
+| Conversation/memory | Threads, messages, summaries, categorized long-term memory | Not stored | Long-term memory vectors and owner/type payload |
+
+The PDF source is stored as an object in RustFS. PostgreSQL stores the searchable evidence records and links each visual record to its original image object. Qdrant stores vectors and payloads for retrieval; it is not the source of the original PDF or image bytes. Text, table, and image descriptions are embedded with OpenAI. Image bytes are retrieved from RustFS only when a relevant visual is selected for an answer or displayed as a citation.
+
+### Ingestion and question-answer flow
+
+1. `POST /api/v1/documents` validates the upload, writes its original bytes to RustFS, records document/job metadata in PostgreSQL, and queues a Celery task in Redis.
+2. The worker extracts PDF text, tables, image blocks, and page renders. It records page-aware evidence in PostgreSQL and uploads visual assets to RustFS.
+3. The selected vision/chat provider creates searchable descriptions for visual evidence. The OpenAI embedding model embeds text chunks, table text, and visual descriptions in batches. Qdrant stores these vectors with evidence IDs and metadata. A document becomes searchable after indexing completes.
+4. The UI listens to `/api/v1/ingestions/{job_id}/events`. The API forwards progress events from Redis Pub/Sub as SSE. If an SSE connection finds a processing job whose recorded task is no longer known to Celery, it can requeue that orphaned job.
+5. On each chat turn, an LLM router receives the question and conversation context and selects the general or RAG agent. The general agent answers from general knowledge and conversation memory; it does not receive retrieved document passages.
+6. The RAG agent combines Qdrant semantic search with PostgreSQL lexical search, fetches original visual bytes from RustFS when relevant, and asks the configured model to answer from the retrieved evidence. The API validates citations against retrieved evidence and shows each source page once.
+7. The user/assistant turn is saved to PostgreSQL. Recent turns and a rolling summary provide short-term context. An LLM extracts useful semantic, episodic, and procedural memories, which are saved in PostgreSQL and indexed in a dedicated Qdrant memory collection for cross-thread recall.
+
+More detail is available in [docs/architecture.md](docs/architecture.md).
+
+## Monitor and troubleshoot
+
+Follow all service logs:
 
 ```bash
-curl -F 'file=@report.pdf' http://localhost:8000/api/v1/documents
+docker compose logs -f
 ```
 
-Poll the returned job ID:
+Follow only API and worker logs:
+
+```bash
+docker compose logs -f api worker
+```
+
+Check whether Celery has active, reserved, or scheduled ingestion tasks:
+
+```bash
+docker compose exec worker celery -A app.worker.celery_app inspect active
+docker compose exec worker celery -A app.worker.celery_app inspect reserved
+docker compose exec worker celery -A app.worker.celery_app inspect scheduled
+```
+
+Upload returns a `job_id`. Check the current persisted status with:
 
 ```bash
 curl http://localhost:8000/api/v1/ingestions/JOB_ID
 ```
 
-Ask from the indexed corpus:
+To watch its SSE progress from a terminal:
+
+```bash
+curl -N http://localhost:8000/api/v1/ingestions/JOB_ID/events
+```
+
+`/api/v1/ingestions/{job_id}` is a one-time status snapshot; `/events` is the live stream used by the UI. If a job remains `processing`, check that the worker is running and inspect its logs and Celery task lists. A worker `ready` line means it can accept work; look for task-received or `ingestion.started` logs to confirm a job was claimed.
+
+Some PDF warnings, such as missing font bounding-box metadata (`FontBBox`), may be emitted while parsing and can be non-fatal. The first high-resolution PDF parse may download layout/OCR model assets, including spaCy assets, and can take longer. Look for subsequent extraction or ingestion errors before concluding it is stuck. To capture detailed image-build output:
+
+```bash
+docker compose build --no-cache --progress=plain api worker
+```
+
+Inspect PostgreSQL from the Compose network:
+
+```bash
+docker compose exec postgres sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+```
+
+Inspect Qdrant collections at <http://localhost:6333/dashboard> and uploaded objects in the RustFS console at <http://localhost:9001>. Credentials for the console are `S3_ACCESS_KEY` and `S3_SECRET_KEY` from `.env`.
+
+## API reference
+
+Interactive request schemas are available at <http://localhost:8000/docs>. Main endpoints:
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/v1/health` | API health check |
+| `POST` | `/api/v1/documents` | Upload and queue a PDF/image (`multipart/form-data`, field `file`) |
+| `GET` | `/api/v1/ingestions/{job_id}` | Read current ingestion status |
+| `GET` | `/api/v1/ingestions/{job_id}/events` | Stream ingestion status and progress events over SSE |
+| `GET` | `/api/v1/evidence/{evidence_id}/image` | Display/download an original cited visual |
+| `POST` | `/api/v1/chat` | Non-streaming text chat (`question`, optional `thread_id`) |
+| `POST` | `/api/v1/chat/stream` | Streaming text chat as SSE events |
+| `POST` | `/api/v1/chat/multimodal` | Non-streaming chat with image attachments |
+| `POST` | `/api/v1/chat/multimodal/stream` | Streaming chat with image attachments |
+| `POST`, `GET` | `/api/v1/threads` | Create/list conversation threads |
+| `GET` | `/api/v1/threads/{thread_id}` | Read a thread and its messages |
+| `GET` | `/api/v1/memories` | List long-term memory records |
+| `DELETE` | `/api/v1/memories/{memory_id}` | Delete one memory |
+| `DELETE` | `/api/v1/memory` | Delete all local memories and conversation threads |
+
+Chat stream events include stages, generated token deltas, the final response, and completion/error events. Chat responses include an `answer`, `citations`, `insufficient_evidence`, and `thread_id`. Document citation page numbers are one-based. A `thread_id` must be sent on later requests to continue the same thread.
+
+### API examples
+
+Upload a PDF:
+
+```bash
+curl -F 'file=@report.pdf' http://localhost:8000/api/v1/documents
+```
+
+Ask a question and create a thread (the returned response includes its `thread_id`):
 
 ```bash
 curl -H 'Content-Type: application/json' \
-  -d '{"question":"What was the ARR growth rate?"}' \
+  -d '{"question":"What does the report say about ARR growth?"}' \
   http://localhost:8000/api/v1/chat
 ```
 
-Ask with an image and text:
+Continue a thread by passing its ID:
+
+```bash
+curl -H 'Content-Type: application/json' \
+  -d '{"question":"Show me the chart for that trend.","thread_id":"THREAD_ID"}' \
+  http://localhost:8000/api/v1/chat
+```
+
+Stream chat output:
+
+```bash
+curl -N -H 'Content-Type: application/json' \
+  -d '{"question":"Summarize the report.","thread_id":"THREAD_ID"}' \
+  http://localhost:8000/api/v1/chat/stream
+```
+
+Ask about an attached image:
 
 ```bash
 curl -F 'question=What does this chart show?' \
@@ -72,43 +230,68 @@ curl -F 'question=What does this chart show?' \
   http://localhost:8000/api/v1/chat/multimodal
 ```
 
-Chat response shape:
+## Develop, test, and update
 
-```json
-{
-  "answer": "...",
-  "citations": [
-    {"document_id":"...","filename":"report.pdf","page_number":3,"evidence_id":"...","evidence_type":"table"}
-  ],
-  "insufficient_evidence": false,
-  "thread_id": "..."
-}
-```
+### Run tests
 
-For later curl turns, send the returned ID as `{"question":"...","thread_id":"..."}` so they stay in the same conversation. If omitted, the API starts a new thread for that request.
-
-User-uploaded images are request-scoped evidence and can be cited as `user_image` with no document ID or page number. Document citations use one-based PDF page numbers.
-
-## Development and tests
-
-After changing embedding models, rebuild the active Qdrant collection from the evidence already stored in PostgreSQL:
-
-```bash
-docker compose up --build -d
-docker compose exec api python -m app.reindex
-```
-
-This sends each evidence text/description to OpenAI for a new embedding and writes vectors to the configured collection. It preserves the source PDFs and image assets.
-
-Install Docker Desktop and an API key for one supported provider, then follow the Compose instructions above. Run the test suite in an environment with project dependencies installed:
+Install the project and development dependencies in a Python environment supported by the project:
 
 ```bash
 python -m pip install -e '.[dev]'
-pytest
+python -m pytest
 ```
 
-Unit and integration tests use fake provider/storage/vector adapters and do not consume model credits. The end-to-end API test uses the same fakes. Live provider checks are deliberately not part of the default test suite.
+The default tests use fake model, storage, and vector adapters; they do not call paid model APIs. PDF extraction dependencies may still require system packages when running outside Docker. Docker is the recommended way to run the full application stack.
 
-## Architecture
+### Apply code changes
 
-See [docs/architecture.md](docs/architecture.md) for component responsibilities, persistence boundaries, failure handling, and configuration.
+Edit the files in this repository, then rebuild the services that contain those files:
+
+```bash
+docker compose up -d --build api worker
+```
+
+The API serves the browser UI, so rebuild `api` after changing files under `app/static/`. Rebuild `worker` after changing ingestion or task code. Rebuild both after changing shared application modules or dependencies. The API runs database migrations at startup. Normal code updates preserve PostgreSQL, Redis, Qdrant, RustFS, and model-cache volumes.
+
+To rebuild all services after changing Compose configuration or dependencies:
+
+```bash
+docker compose up -d --build
+```
+
+### Change the embedding model
+
+Qdrant vector dimensions must match the configured model and `EMBEDDING_DIMENSION`. A different model or dimension creates an incompatible vector space; re-embed existing evidence into a compatible Qdrant collection before querying it. Update `.env`, select an unused `QDRANT_COLLECTION` when the vector size changes, rebuild/restart the API and worker, then run:
+
+```bash
+docker compose exec api python -m app.reindex
+```
+
+`app.reindex` regenerates vectors from evidence text and descriptions already stored in PostgreSQL. It does not re-run PDF extraction or regenerate visual descriptions. The OpenAI API key is required for this operation.
+
+### Stop or reset local data
+
+Stop containers while keeping all persisted data:
+
+```bash
+docker compose down
+```
+
+Start them again:
+
+```bash
+docker compose up -d
+```
+
+To permanently delete **all** Compose volumes and start with empty databases, vector indexes, queues, uploaded objects, and cached models:
+
+```bash
+docker compose down -v --remove-orphans
+docker compose up --build -d
+```
+
+The `down -v` command is destructive. It deletes uploaded PDFs/images and all persisted conversation, database, Redis, and Qdrant data. Do not use it for an ordinary code update.
+
+## Security and deployment scope
+
+This repository configures a single-machine development stack. The application currently has no user authentication or tenant isolation; local conversation memory uses one shared owner namespace. Keep the API bound to localhost and do not expose it to an untrusted network as-is. Before a shared or public deployment, implement authentication/authorization and per-user memory/document access, secure provider and storage credentials, TLS, backups, quotas, retention policies, monitoring, and network restrictions. Review which extracted text and images are sent to the configured model provider for your data requirements.
