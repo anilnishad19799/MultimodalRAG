@@ -1,4 +1,11 @@
 const API = "/api/v1";
+const authPanel = document.querySelector("#auth-panel");
+const authForm = document.querySelector("#auth-form");
+const authModeToggle = document.querySelector("#auth-mode-toggle");
+const authError = document.querySelector("#auth-error");
+const authSuccess = document.querySelector("#auth-success");
+const signoutButton = document.querySelector("#signout-button");
+let authMode = "signin";
 const fileInput = document.querySelector("#document-files");
 const uploadForm = document.querySelector("#upload-form");
 const uploadButton = document.querySelector("#upload-button");
@@ -79,7 +86,9 @@ function renderDocument(item) {
   progress.setAttribute("aria-valuenow", String(percent));
   row.querySelector(".document-progress-fill").style.width = `${percent}%`;
   const detail = item.progress_details || {};
-  row.querySelector(".document-details").textContent = detail.total_records != null
+  row.querySelector(".document-details").textContent = normalizedDocumentReady(item.status)
+    ? "Ready to query"
+    : detail.total_records != null
     ? `Pages ${detail.pages || 0} · Text chunks ${detail.text_chunks || 0} · Table chunks ${detail.table_chunks || 0} · Image records ${detail.image_records || 0} · Total ${detail.total_records || 0}`
     : detail.pages != null ? `PDF pages ${detail.pages} · extracting content and counting chunks…` : "Waiting for worker…";
   if (item.progress_message) {
@@ -97,6 +106,10 @@ function renderDocument(item) {
   documentCount.textContent = String(documents.size);
   documentsEmpty?.classList.toggle("hidden", documents.size > 0);
   updateChatGate();
+}
+
+function normalizedDocumentReady(status) {
+  return status === "completed";
 }
 
 function updateChatGate() {
@@ -354,7 +367,93 @@ threadSelect.addEventListener("change", () => {
 });
 newThreadButton.addEventListener("click", () => createThread().catch((error) => notify(error.message)));
 updateChatGate();
-refreshThreads().catch((error) => notify(`Could not load conversation history: ${error.message}`));
+
+async function loadStoredPDFs() {
+  const response = await fetch(`${API}/documents`);
+  const rows = await parseResponse(response);
+  for (const row of rows) {
+    const rendered = {
+      ...row, document_id: row.id, job_id: row.job_id || `stored-${row.id}`,
+      status: row.status,
+      progress_details: row.progress_details || {},
+    };
+    renderDocument(rendered);
+    if (row.job_id && ["queued", "processing"].includes(row.status)) {
+      streamIngestion(row.job_id, row.filename);
+    }
+  }
+}
+
+function showWorkspace(signedIn) {
+  authPanel.classList.toggle("hidden", signedIn);
+  document.querySelectorAll(".requires-auth").forEach((item) => item.classList.toggle("hidden", !signedIn));
+  signoutButton.classList.toggle("hidden", !signedIn);
+}
+
+function setAuthMode(mode) {
+  authMode = mode;
+  authSuccess.classList.add("hidden");
+  document.querySelector("#auth-heading").textContent = authMode === "signin" ? "Welcome back" : "Create your account";
+  document.querySelector("#auth-description").textContent = authMode === "signin"
+    ? "Sign in to continue to your workspace."
+    : "Start your private workspace. Your account keeps documents and memory separate.";
+  document.querySelector("#auth-password").autocomplete = authMode === "signin" ? "current-password" : "new-password";
+  document.querySelector("#auth-submit").textContent = authMode === "signin" ? "Sign in" : "Create account";
+  document.querySelector("#auth-switch-prompt").textContent = authMode === "signin" ? "New to the workspace?" : "Already have an account?";
+  authModeToggle.textContent = authMode === "signin" ? "Create an account" : "Sign in";
+  authError.classList.add("hidden");
+}
+
+authModeToggle.addEventListener("click", () => {
+  setAuthMode(authMode === "signin" ? "signup" : "signin");
+});
+
+authForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  authError.classList.add("hidden");
+  const button = document.querySelector("#auth-submit");
+  button.disabled = true;
+  try {
+    const response = await fetch(`${API}/auth/${authMode}`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({email: document.querySelector("#auth-email").value,
+        password: document.querySelector("#auth-password").value}),
+    });
+    const account = await parseResponse(response);
+    authForm.reset();
+    if (authMode === "signup") {
+      setAuthMode("signin");
+      document.querySelector("#auth-email").value = account.email;
+      authSuccess.textContent = "Your account is ready. Sign in with your new email and password.";
+      authSuccess.classList.remove("hidden");
+      document.querySelector("#auth-password").focus();
+      return;
+    }
+    showWorkspace(true);
+    await Promise.all([loadStoredPDFs(), refreshThreads()]);
+  } catch (error) {
+    authError.textContent = error.message;
+    authError.classList.remove("hidden");
+  } finally { button.disabled = false; }
+});
+
+signoutButton.addEventListener("click", async () => {
+  try {
+    await parseResponse(await fetch(`${API}/auth/signout`, {method: "POST"}));
+    activeThreadId = null;
+    localStorage.removeItem("rag_thread_id");
+    documents.clear();
+    documentList.replaceChildren();
+    documentCount.textContent = "0";
+    showWorkspace(false);
+  } catch (error) { notify(error.message); }
+});
+
+fetch(`${API}/auth/me`).then(async (response) => {
+  if (!response.ok) { showWorkspace(false); return; }
+  showWorkspace(true);
+  await Promise.all([loadStoredPDFs(), refreshThreads()]);
+}).catch(() => showWorkspace(false));
 
 async function loadMemories() {
   const response = await fetch(`${API}/memories`);

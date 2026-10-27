@@ -9,6 +9,7 @@ A local-first, Docker Compose application for uploading PDFs and images, searchi
 - **Hybrid search:** combines OpenAI embeddings in Qdrant with PostgreSQL full-text search. The model must cite retrieved evidence for document-grounded answers; citations are checked against the retrieved evidence and repeated citations to the same source page are collapsed.
 - **General and document agents:** a LangGraph LLM router sends general questions to the general-answer agent and questions requiring uploaded-source evidence to the document RAG agent.
 - **Conversation memory:** maintains recent turns and an LLM-generated thread summary. LLM-extracted semantic, episodic, and procedural memories are stored in PostgreSQL and searched in a dedicated Qdrant memory collection across threads.
+- **User accounts:** email and password sign-up/sign-in, expiring HttpOnly signed sessions, and user-owned threads, memories, uploads, and document search.
 - **Live UI updates:** PDF ingestion progress uses Server-Sent Events (SSE), including stage, percentage, and available page/text/table/image counts. Chat responses stream as the model generates them.
 - **Local services:** PostgreSQL stores records and metadata, Qdrant stores vectors, Redis carries Celery jobs and progress events, and RustFS stores original PDF and image objects through an S3-compatible API.
 
@@ -31,7 +32,7 @@ From the repository root:
    cp .env.example .env
    ```
 
-2. Edit `.env`. Set `OPENAI_API_KEY` and the key for `MODEL_PROVIDER` (`OPENAI_API_KEY`, `GROQ_API_KEY`, or `GEMINI_API_KEY`). OpenAI embeddings are used regardless of the selected chat/vision provider, so `OPENAI_API_KEY` is always required.
+2. Edit `.env`. Set `SESSION_SECRET` to a unique random value (at least 32 characters), `OPENAI_API_KEY`, and the key for `MODEL_PROVIDER` (`OPENAI_API_KEY`, `GROQ_API_KEY`, or `GEMINI_API_KEY`). OpenAI embeddings are used regardless of the selected chat/vision provider, so `OPENAI_API_KEY` is always required.
 
 3. Build and start the services:
 
@@ -50,6 +51,8 @@ From the repository root:
 
 5. Open the application at <http://localhost:8000>. The API reference is at <http://localhost:8000/docs>.
 
+Create an account from the sign-in screen. For an HTTPS production deployment, set `APP_ENV=production` and `SESSION_COOKIE_SECURE=true`; the app refuses production startup with a missing/weak session secret or non-secure session cookies.
+
 Useful local service pages:
 
 - Qdrant: <http://localhost:6333/dashboard>
@@ -64,6 +67,8 @@ The starting values are in [.env.example](.env.example). Change secrets before u
 | Variable | Purpose | Default/example |
 | --- | --- | --- |
 | `MODEL_PROVIDER` | Chat and vision provider: `openai`, `groq`, or `gemini` | `openai` |
+| `SESSION_SECRET` | Signs browser sessions; use a unique random secret of at least 32 characters | Required by Compose |
+| `SESSION_COOKIE_SECURE` | Restricts session cookies to HTTPS | `false` for local HTTP; `true` for HTTPS |
 | `OPENAI_API_KEY` | OpenAI embeddings key; also the chat key when provider is OpenAI | Empty; required |
 | `GROQ_API_KEY`, `GEMINI_API_KEY` | Chat/vision key when the corresponding provider is selected | Empty |
 | `OPENAI_MODEL`, `GROQ_MODEL`, `GEMINI_MODEL` | Chat model name for the selected provider | See `.env.example` |
@@ -91,7 +96,7 @@ Keep `.env` private and do not commit it. Provider API keys stay in the backend;
 
 General questions can be asked without uploading anything. For questions about a PDF, ask about the subject, page, table, chart, or other evidence in the uploaded source. For chart questions, ask to show the chart if you want the original retrieved image displayed with the answer.
 
-The chat panel supports separate threads. **New chat** starts a thread; the history menu returns to a saved thread. Use **Memory** to view or remove long-term memories. **Forget all** deletes the local owner's long-term memories and conversation threads/messages; it does not delete uploaded documents.
+The chat panel supports separate threads. **New chat** starts a thread; the history menu returns to a saved thread. Use **Memory** to view or remove long-term memories. **Forget all** deletes the signed-in user's long-term memories and conversation threads/messages; it does not delete uploaded documents.
 
 ### Data flow and storage
 

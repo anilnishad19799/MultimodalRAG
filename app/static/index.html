@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f5f5f2">
   <title>Multimodal RAG</title>
-  <link rel="stylesheet" href="/static/app.css?v=20261015-independent-panels">
-  <script src="/static/app.js?v=20261015-sse-stream" defer></script>
+  <link rel="stylesheet" href="/static/app.css?v=20261027-auth">
+  <script src="/static/app.js?v=20261027-auth" defer></script>
 </head>
 <body>
   <main class="shell">
@@ -16,15 +16,43 @@
         <span>Multimodal <strong>RAG</strong></span>
       </a>
       <a class="api-link" href="/docs" target="_blank" rel="noreferrer">API docs <span aria-hidden="true">↗</span></a>
+      <button type="button" id="signout-button" class="thread-new hidden">Sign out</button>
     </header>
 
-    <section class="intro">
+    <section id="auth-panel" class="auth-panel" aria-labelledby="auth-heading">
+      <aside class="auth-story">
+        <div class="auth-story-mark">M</div>
+        <div class="auth-story-copy">
+          <div class="eyebrow"><span class="live-dot"></span> YOUR PRIVATE AI WORKSPACE</div>
+          <h1>Good work starts with the right context.</h1>
+          <p>Bring your PDFs, questions, and ongoing work into one private place.</p>
+          <ul><li>Answers grounded in your documents</li><li>Conversations saved to your account</li><li>Your own private assistant memory</li></ul>
+        </div>
+        <div class="auth-story-foot">MULTIMODAL RAG <span>·</span> PRIVATE BY DESIGN</div>
+      </aside>
+      <div class="auth-card">
+        <div class="auth-step">SECURE ACCOUNT ACCESS</div>
+        <h2 id="auth-heading">Welcome back</h2>
+        <p id="auth-description">Sign in to continue to your workspace.</p>
+        <p id="auth-success" class="auth-success hidden" role="status"></p>
+        <form id="auth-form" class="auth-form">
+          <label for="auth-email">Email address<input id="auth-email" type="email" autocomplete="email" placeholder="you@company.com" required maxlength="320"></label>
+          <label for="auth-password">Password<input id="auth-password" type="password" autocomplete="current-password" placeholder="At least 12 characters" required minlength="12" maxlength="1024"></label>
+          <button class="button button-primary full-width" id="auth-submit" type="submit">Sign in</button>
+        </form>
+        <p class="auth-switch-copy"><span id="auth-switch-prompt">New to the workspace?</span> <button type="button" id="auth-mode-toggle" class="auth-toggle">Create an account</button></p>
+        <p id="auth-error" class="auth-error hidden" role="alert"></p>
+        <p class="auth-security">Protected with a private, encrypted sign-in session.</p>
+      </div>
+    </section>
+
+    <section class="intro requires-auth hidden">
       <div class="eyebrow"><span class="live-dot"></span> PRIVATE DOCUMENT WORKSPACE</div>
       <h1>Ask your documents<br><span>anything.</span></h1>
       <p>Ask general questions directly, or upload a PDF to ask domain questions grounded in its text, tables, and visuals.</p>
     </section>
 
-    <div class="workspace">
+    <div class="workspace requires-auth hidden">
       <section class="panel upload-panel" aria-labelledby="upload-heading">
         <div class="panel-heading">
           <div class="step">01</div>
@@ -90,7 +118,7 @@
         <p class="chat-note">General answers use the LLM. Answers about uploaded documents use retrieved evidence and citations.</p>
       </section>
     </div>
-    <footer>Files and API keys stay in your configured backend storage. <span>·</span> <a href="/docs">Open API reference</a></footer>
+    <footer class="requires-auth hidden">Files and API keys stay in your configured backend storage. <span>·</span> <a href="/docs">Open API reference</a></footer>
   </main>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 </body>

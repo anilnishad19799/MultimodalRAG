@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     app_env: str = "development"
+    session_secret: str = "development-only-change-this-session-secret"
+    session_cookie_secure: bool = False
     log_level: str = "INFO"
     model_provider: Literal["openai", "groq", "gemini"] = "openai"
     openai_api_key: SecretStr | None = None
@@ -33,6 +35,15 @@ class Settings(BaseSettings):
     max_pdf_pages: int = Field(default=300, gt=0)
     pdf_render_dpi: int = Field(default=144, ge=72, le=300)
     retrieval_limit: int = Field(default=8, ge=1, le=50)
+
+    @model_validator(mode="after")
+    def validate_production_auth(self):
+        if self.app_env == "production":
+            if len(self.session_secret) < 32 or self.session_secret.startswith("development-only"):
+                raise ValueError("Set SESSION_SECRET to a random value of at least 32 characters in production")
+            if not self.session_cookie_secure:
+                raise ValueError("SESSION_COOKIE_SECURE must be enabled in production HTTPS deployments")
+        return self
 
     @property
     def selected_api_key(self) -> str:

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.schemas import ChatResponse
 from app.core.errors import ProviderError
-from app.db.models import DocumentRecord
+from app.db.models import DocumentRecord, EvidenceRecord
 from app.query.service import QueryService
 
 logger = structlog.get_logger(__name__)
@@ -90,7 +90,8 @@ class LangGraphChatRouter:
         memory = state.get("memory", {})
         filenames = state["session"].scalars(
             select(DocumentRecord.filename)
-            .where(DocumentRecord.status == "completed")
+            .where(DocumentRecord.status == "completed",
+                   DocumentRecord.owner_id == memory.get("owner_id", "local"))
             .order_by(DocumentRecord.created_at.desc())
             .limit(40)
         ).all()
@@ -100,8 +101,15 @@ class LangGraphChatRouter:
         try:
             semantic_hits = self.services.vector_index.search(memory_vector, 4)
             lexical_hits = self.query_service._lexical_search(
-                state["session"], retrieval_query, 4
+                state["session"], retrieval_query, 4, memory.get("owner_id", "local")
             )
+            hit_ids = [str(hit.get("evidence_id", "")) for hit in semantic_hits]
+            visible_ids = set(state["session"].scalars(
+                select(EvidenceRecord.id).join(DocumentRecord, EvidenceRecord.document_id == DocumentRecord.id)
+                .where(EvidenceRecord.id.in_(hit_ids), DocumentRecord.status == "completed",
+                       DocumentRecord.owner_id == memory.get("owner_id", "local"))
+            ).all()) if hit_ids else set()
+            semantic_hits = [hit for hit in semantic_hits if str(hit.get("evidence_id", "")) in visible_ids]
             for hit in [*semantic_hits, *lexical_hits]:
                 evidence_id = str(hit.get("evidence_id", ""))
                 if not evidence_id:
@@ -120,12 +128,15 @@ class LangGraphChatRouter:
         context = {
             "summary": memory.get("thread_summary", ""),
             "recent_messages": memory.get("recent_messages", []),
+            "previous_user_questions": memory.get("previous_user_questions", []),
             "long_term_memories": memory.get("long_term_memories", []),
         }
         prompt = (
             "You are the routing agent in a LangGraph multi-agent assistant. Decide which specialist should answer. "
             "Reason about what information source the user's intent requires. When the user wants to recall or "
-            "summarize this conversation, use the general agent and its conversation memory. When the user wants "
+            "summarize this conversation, including asking for previous/last questions or what was said, use the "
+            "general agent and its conversation memory. This intent takes priority over matching document evidence. "
+            "When the user wants "
             "facts from uploaded material, use the document agent. Do not confuse a conversation that discusses "
             "documents with a request to retrieve facts from those documents; relevant-looking evidence candidates "
             "do not override the user's actual intent. "

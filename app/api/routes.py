@@ -11,8 +11,9 @@ from sqlalchemy import delete, func, select
 from starlette.concurrency import run_in_threadpool
 
 from app.core.errors import InvalidUpload
+from app.core.auth import authenticate, create_account, issue_session, revoke_sessions
 from app.core.schemas import (
-    ChatRequest, ChatResponse, IngestionStatus, MemoryForgetResult, MemoryItem, ThreadCreate,
+    AuthCredentials, ChatRequest, ChatResponse, IngestionStatus, MemoryForgetResult, MemoryItem, ThreadCreate,
     ThreadDetail, ThreadMessage, ThreadSummary,
 )
 from app.db.models import (
@@ -21,11 +22,47 @@ from app.db.models import (
 )
 from app.ingestion.extractor import validate_upload
 from app.ingestion.service import register_document
-from app.query.memory import ConversationMemory, LOCAL_OWNER
+from app.query.memory import ConversationMemory
 from app.worker import celery_app, ingest_document, publish_ingestion_progress
 
 router = APIRouter(prefix="/api/v1")
 logger = structlog.get_logger(__name__)
+
+
+def _owner(request: Request) -> str:
+    return request.state.owner_id
+
+
+@router.post("/auth/signup", status_code=201)
+def signup(request: Request, body: AuthCredentials, response: Response):
+    session = request.app.state.session_factory()
+    try:
+        account = create_account(session, body.email, body.password)
+        return {"id": account.id, "email": account.email}
+    finally:
+        session.close()
+
+
+@router.post("/auth/signin")
+def signin(request: Request, body: AuthCredentials, response: Response):
+    session = request.app.state.session_factory()
+    try:
+        account = authenticate(session, body.email, body.password)
+        issue_session(response, account, request.app.state.settings)
+        return {"id": account.id, "email": account.email}
+    finally:
+        session.close()
+
+
+@router.post("/auth/signout")
+def signout(request: Request, response: Response):
+    revoke_sessions(request, response)
+    return {"ok": True}
+
+
+@router.get("/auth/me")
+def auth_me(request: Request):
+    return {"id": _owner(request)}
 
 
 @router.get("/health")
@@ -37,7 +74,7 @@ def health() -> dict[str, str]:
 def create_thread(request: Request, body: ThreadCreate) -> ThreadSummary:
     session = request.app.state.session_factory()
     try:
-        thread = ConversationThread(id=str(uuid.uuid4()), owner_id=LOCAL_OWNER,
+        thread = ConversationThread(id=str(uuid.uuid4()), owner_id=_owner(request),
                                     title=(body.title or "New conversation")[:200])
         session.add(thread)
         session.commit()
@@ -53,7 +90,7 @@ def list_threads(request: Request, limit: int = 30) -> list[ThreadSummary]:
     session = request.app.state.session_factory()
     try:
         threads = session.scalars(
-            select(ConversationThread).where(ConversationThread.owner_id == LOCAL_OWNER)
+            select(ConversationThread).where(ConversationThread.owner_id == _owner(request))
             .order_by(ConversationThread.updated_at.desc()).limit(max(1, min(limit, 100)))
         ).all()
         return [ThreadSummary(id=item.id, title=item.title, created_at=item.created_at,
@@ -67,7 +104,7 @@ def get_thread(request: Request, thread_id: str) -> ThreadDetail:
     session = request.app.state.session_factory()
     try:
         thread = session.get(ConversationThread, thread_id)
-        if not thread or thread.owner_id != LOCAL_OWNER:
+        if not thread or thread.owner_id != _owner(request):
             raise HTTPException(status_code=404, detail="Conversation thread not found")
         messages = session.scalars(
             select(ConversationMessage).where(ConversationMessage.thread_id == thread.id)
@@ -87,7 +124,7 @@ def list_memories(request: Request) -> list[MemoryItem]:
     session = request.app.state.session_factory()
     try:
         rows = session.scalars(
-            select(LongTermMemory).where(LongTermMemory.owner_id == LOCAL_OWNER)
+            select(LongTermMemory).where(LongTermMemory.owner_id == _owner(request))
             .order_by(LongTermMemory.created_at.desc()).limit(500)
         ).all()
         return [MemoryItem(id=row.id, memory_type=row.memory_type, content=row.content,
@@ -101,7 +138,7 @@ def forget_memory(request: Request, memory_id: str) -> Response:
     session = request.app.state.session_factory()
     try:
         memory = session.scalar(select(LongTermMemory).where(
-            LongTermMemory.id == memory_id, LongTermMemory.owner_id == LOCAL_OWNER,
+            LongTermMemory.id == memory_id, LongTermMemory.owner_id == _owner(request),
         ))
         if not memory:
             raise HTTPException(status_code=404, detail="Memory not found")
@@ -123,19 +160,19 @@ def forget_all_memory(request: Request) -> MemoryForgetResult:
     try:
         # Remove vectors first; if Qdrant is unavailable, keep the database intact for retry.
         try:
-            request.app.state.services.vector_index.delete_memories(LOCAL_OWNER)
+            request.app.state.services.vector_index.delete_memories(_owner(request))
         except Exception as exc:
             raise HTTPException(status_code=503, detail="Could not remove memories from vector search") from exc
         memory_count = session.scalar(select(func.count()).select_from(LongTermMemory).where(
-            LongTermMemory.owner_id == LOCAL_OWNER,
+            LongTermMemory.owner_id == _owner(request),
         )) or 0
-        owned_thread_ids = select(ConversationThread.id).where(ConversationThread.owner_id == LOCAL_OWNER)
+        owned_thread_ids = select(ConversationThread.id).where(ConversationThread.owner_id == _owner(request))
         thread_count = session.scalar(select(func.count()).select_from(ConversationThread).where(
-            ConversationThread.owner_id == LOCAL_OWNER,
+            ConversationThread.owner_id == _owner(request),
         )) or 0
-        session.execute(delete(LongTermMemory).where(LongTermMemory.owner_id == LOCAL_OWNER))
+        session.execute(delete(LongTermMemory).where(LongTermMemory.owner_id == _owner(request)))
         session.execute(delete(ConversationMessage).where(ConversationMessage.thread_id.in_(owned_thread_ids)))
-        session.execute(delete(ConversationThread).where(ConversationThread.owner_id == LOCAL_OWNER))
+        session.execute(delete(ConversationThread).where(ConversationThread.owner_id == _owner(request)))
         session.commit()
         return MemoryForgetResult(deleted_memories=memory_count, deleted_threads=thread_count)
     finally:
@@ -158,7 +195,7 @@ def _register_upload(request: Request, filename: str, content_type: str, data: b
     try:
         document, job = register_document(
             session, request.app.state.services.storage, filename,
-            content_type, data, settings.max_upload_bytes, settings.max_image_bytes,
+            content_type, data, settings.max_upload_bytes, settings.max_image_bytes, _owner(request),
         )
         if job.status in {"queued", "failed"}:
             job.status, job.error = "queued", None
@@ -186,7 +223,10 @@ def ingestion_status(request: Request, job_id: str) -> IngestionStatus:
     session = request.app.state.session_factory()
     try:
         job = session.get(IngestionJob, job_id)
-        if not job:
+        if not job or session.scalar(select(DocumentRecord.id).where(
+            DocumentRecord.id == job.document_id,
+            DocumentRecord.owner_id == _owner(request),
+        )) is None:
             raise HTTPException(status_code=404, detail="Ingestion job not found")
         return _ingestion_status(job)
     finally:
@@ -202,12 +242,39 @@ def _ingestion_status(job: IngestionJob) -> IngestionStatus:
     )
 
 
+@router.get("/documents")
+def list_documents(request: Request):
+    session = request.app.state.session_factory()
+    try:
+        rows = session.execute(
+            select(DocumentRecord, IngestionJob).outerjoin(
+                IngestionJob, IngestionJob.document_id == DocumentRecord.id
+            ).where(
+                DocumentRecord.owner_id == _owner(request),
+            ).order_by(DocumentRecord.created_at.desc())
+        ).all()
+        return [{"id": document.id, "filename": document.filename, "content_type": document.content_type,
+                 "status": document.status, "job_id": job.id if job else None,
+                 "progress_percent": job.progress_percent if job else 0,
+                 "progress_message": job.progress_message if job else None,
+                 "progress_current": job.progress_current if job else 0,
+                 "progress_total": job.progress_total if job else 0,
+                 "progress_details": job.progress_details if job else {},
+                 "created_at": document.created_at}
+                for document, job in rows if document.content_type == "application/pdf"]
+    finally:
+        session.close()
+
+
 @router.get("/ingestions/{job_id}/events")
 def ingestion_events(request: Request, job_id: str):
     session = request.app.state.session_factory()
     try:
         job = session.get(IngestionJob, job_id)
-        if not job:
+        if not job or session.scalar(select(DocumentRecord.id).where(
+            DocumentRecord.id == job.document_id,
+                DocumentRecord.owner_id == _owner(request),
+        )) is None:
             raise HTTPException(status_code=404, detail="Ingestion job not found")
     finally:
         session.close()
@@ -312,6 +379,7 @@ def evidence_image(request: Request, evidence_id: str) -> Response:
                 EvidenceRecord.id == evidence_id,
                 EvidenceRecord.kind == "image",
                 DocumentRecord.status == "completed",
+                DocumentRecord.owner_id == _owner(request),
             )
         )
         if not evidence or not evidence.object_key:
@@ -417,7 +485,7 @@ def _stream_query_events(request: Request, question: str, images: list[tuple[str
             events.put(("stage", {"stage": "context", "message": "Loading conversation context"}))
             memory_service = ConversationMemory(session, request.app.state.services)
             try:
-                memory_state = memory_service.begin_turn(thread_id, question)
+                memory_state = memory_service.begin_turn(thread_id, question, _owner(request))
             except ValueError as exc:
                 events.put(("error", {"message": str(exc)}))
                 return
@@ -453,7 +521,7 @@ def _query(request: Request, question: str, images: list[tuple[str, str, bytes]]
     try:
         memory_service = ConversationMemory(session, request.app.state.services)
         try:
-            memory_state = memory_service.begin_turn(thread_id, question)
+            memory_state = memory_service.begin_turn(thread_id, question, _owner(request))
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         answer = request.app.state.chat_graph.invoke(session, question, images, memory_state)

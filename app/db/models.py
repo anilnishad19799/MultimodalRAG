@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -12,13 +12,24 @@ class Base(DeclarativeBase):
     pass
 
 
+class UserAccount(Base):
+    __tablename__ = "users"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(512))
+    session_version: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class DocumentRecord(Base):
     __tablename__ = "documents"
+    __table_args__ = (Index("ix_documents_checksum", "checksum", unique=False),)
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     filename: Mapped[str] = mapped_column(String(255))
     content_type: Mapped[str] = mapped_column(String(100))
-    checksum: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    checksum: Mapped[str] = mapped_column(String(64), index=False)
     object_key: Mapped[str] = mapped_column(String(512))
+    owner_id: Mapped[str] = mapped_column(String(36), default="unassigned", index=True)
     status: Mapped[str] = mapped_column(String(24), default="queued", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

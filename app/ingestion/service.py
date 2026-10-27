@@ -122,6 +122,7 @@ class IngestionService:
                 payload = {
                     "evidence_id": evidence_id,
                     "document_id": document_id,
+                    "owner_id": document.owner_id,
                     "filename": document.filename,
                     "page_number": item.page_number,
                     "kind": kind,
@@ -255,10 +256,14 @@ def register_document(
     data: bytes,
     max_bytes: int,
     max_image_bytes: int,
+    owner_id: str = "unassigned",
 ) -> tuple[DocumentRecord, IngestionJob]:
     mime = validate_upload(filename, content_type, data, max_bytes, max_image_bytes)
     checksum = hashlib.sha256(data).hexdigest()
-    existing = session.scalar(select(DocumentRecord).where(DocumentRecord.checksum == checksum))
+    existing = session.scalar(select(DocumentRecord).where(
+        DocumentRecord.checksum == checksum,
+        DocumentRecord.owner_id == owner_id,
+    ).order_by(DocumentRecord.owner_id == owner_id))
     if existing:
         job = session.scalar(select(IngestionJob).where(IngestionJob.document_id == existing.id))
         if job:
@@ -268,7 +273,8 @@ def register_document(
     object_key = f"documents/{document_id}/source.{suffix}"
     storage.put(object_key, data, mime)
     document = DocumentRecord(
-        id=document_id, filename=filename, content_type=mime, checksum=checksum, object_key=object_key
+        id=document_id, filename=filename, content_type=mime, checksum=checksum, object_key=object_key,
+        owner_id=owner_id,
     )
     job = IngestionJob(id=job_id, document_id=document_id)
     session.add_all([document, job])

@@ -22,13 +22,13 @@ class ConversationMemory:
         self.session = session
         self.services = services
 
-    def begin_turn(self, thread_id: str | None, question: str) -> dict:
+    def begin_turn(self, thread_id: str | None, question: str, owner_id: str = LOCAL_OWNER) -> dict:
         thread = self.session.get(ConversationThread, thread_id) if thread_id else None
-        if thread_id and (thread is None or thread.owner_id != LOCAL_OWNER):
+        if thread_id and (thread is None or thread.owner_id != owner_id):
             raise ValueError("Conversation thread not found")
         if thread is None:
             title = re.sub(r"\s+", " ", question).strip()[:80] or "New conversation"
-            thread = ConversationThread(id=str(uuid4()), owner_id=LOCAL_OWNER, title=title)
+            thread = ConversationThread(id=str(uuid4()), owner_id=owner_id, title=title)
             self.session.add(thread)
             self.session.flush()
         elif thread.title == "New conversation":
@@ -41,17 +41,17 @@ class ConversationMemory:
         thread.updated_at = utcnow()
         self.session.commit()
 
-        previous_user_question = self.session.scalar(
+        previous_user_questions = self.session.scalars(
             select(ConversationMessage.content)
-            .join(ConversationThread, ConversationMessage.thread_id == ConversationThread.id)
             .where(
-                ConversationThread.owner_id == LOCAL_OWNER,
+                ConversationMessage.thread_id == thread.id,
                 ConversationMessage.role == "user",
                 ConversationMessage.id != user_message.id,
             )
             .order_by(ConversationMessage.created_at.desc(), ConversationMessage.id.desc())
-            .limit(1)
-        )
+            .limit(RECENT_TURNS)
+        ).all()
+        previous_user_questions.reverse()
 
         messages = self.session.scalars(
             select(ConversationMessage)
@@ -91,7 +91,7 @@ class ConversationMemory:
             best: dict[str, dict[str, str]] = {}
             for memory_type in ("semantic", "episodic", "procedural"):
                 hits = self.services.vector_index.search_memories(
-                    query_vector, LOCAL_OWNER, max(2, MEMORY_RECALL_LIMIT // 2), memory_type
+                    query_vector, owner_id, max(2, MEMORY_RECALL_LIMIT // 2), memory_type
                 )
                 for hit in hits:
                     if hit.get("content") and float(hit.get("score", 0)) >= 0.20:
@@ -106,6 +106,7 @@ class ConversationMemory:
 
         return {
             "thread_id": thread.id,
+            "owner_id": owner_id,
             "thread_summary": thread.summary or "",
             "recent_messages": recent,
             "long_term_memories": recalled,
@@ -113,7 +114,7 @@ class ConversationMemory:
             "retrieval_query": retrieval_query,
             "user_message_id": user_message.id,
             "question": question,
-            "previous_user_question": previous_user_question,
+            "previous_user_questions": previous_user_questions,
         }
 
     def finish_turn(self, state: dict, answer: str, citations: list[dict]) -> None:
@@ -195,13 +196,13 @@ class ConversationMemory:
             normalized = re.sub(r"\s+", " ", content).strip()
             fingerprint = hashlib.sha256(f"{memory_type}:{normalized.casefold()}".encode()).hexdigest()
             existing = self.session.scalar(select(LongTermMemory).where(
-                LongTermMemory.owner_id == LOCAL_OWNER,
+                LongTermMemory.owner_id == state["owner_id"],
                 LongTermMemory.fingerprint == fingerprint,
             ))
             if existing:
                 continue
             memory = LongTermMemory(
-                id=str(uuid4()), owner_id=LOCAL_OWNER, source_thread_id=thread_id,
+                id=str(uuid4()), owner_id=state["owner_id"], source_thread_id=thread_id,
                 source_message_id=state["user_message_id"], memory_type=memory_type,
                 content=normalized, fingerprint=fingerprint,
             )
@@ -212,7 +213,7 @@ class ConversationMemory:
     def _sync_pending_memories(self) -> None:
         pending = self.session.scalars(
             select(LongTermMemory).where(
-                LongTermMemory.owner_id == LOCAL_OWNER, LongTermMemory.vector_synced.is_(False)
+                LongTermMemory.vector_synced.is_(False)
             ).order_by(LongTermMemory.created_at).limit(20)
         ).all()
         for memory in pending:

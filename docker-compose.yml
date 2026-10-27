@@ -2,6 +2,10 @@ services:
   api:
     build: .
     env_file: .env
+    environment:
+      SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET in .env}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+      APP_ENV: ${APP_ENV:-development}
     ports: ["127.0.0.1:8000:8000"]
     depends_on:
       postgres: {condition: service_healthy}
